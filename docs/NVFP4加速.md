@@ -17,7 +17,7 @@
 
 ## 2. 准备并启动
 
-先完成[安装部署中的实时 API 环境准备](安装部署.md)：准备 Python、Git、CUDA 13、当前平台的 C++ 工具链及 CMake/Ninja。标准编译目标为 `120a`，Windows RTX 5090 32 GB 有历史语音实测。以下命令都在项目根目录执行。**使用默认位置时，跳过设置模型变量的那一行。** 已有模型放在自定义模型盘时只需设置变量，脚本校验通过后会复用它。
+先按[安装部署](安装部署.md)准备 Python、Git、完整 CUDA 13 Toolkit、当前平台的 C++ 工具链及 CMake/Ninja。精简安装还应包含 CUDA Runtime、cuBLAS 和 cuFFT 的开发库；配置阶段出现 `CUDA::cufft` 表示编译器已找到，但当前 Toolkit 缺少 cuFFT 开发库或 CMake 指向了另一套 Toolkit。标准编译目标为 `120a`。以下命令都在项目根目录执行。**使用默认位置时，跳过设置模型变量的那一行。** 已有模型放在自定义模型盘时只需设置变量，脚本校验通过后会复用它。
 
 **Windows PowerShell**
 
@@ -46,6 +46,8 @@ curl -fsS http://127.0.0.1:8195/health
 健康响应应同时出现 `drama-3` 和 `nvfp4`。最后一行显示引擎配置实际使用的 GGUF 路径。首次启动会校验文件、加载并预热中文和英文。以后若更换模型路径或后端，先执行 `tools/realtime_service.py stop`，再在设置了新变量的终端启动。临时设置只对当前终端及子进程生效，作为系统服务运行时把变量写进该服务的配置。
 
 ## 3. 用自己的台词验证加速
+
+Windows 和 Ubuntu 22.04（WSL2）在同一张 RTX 5090 上分别启动本系统的引擎，通过 8195 合成了「你好。See you soon.」。两次都使用本项目的 GGUF、内置 `zh` 参考与种子 184，均返回 44.1 kHz 单声道 PCM16 WAV。Ubuntu 的模型位于带空格的独立目录，已核对引擎配置指向该文件。首次安装可用同一句试听。[Windows 样音](samples/nvfp4-mixed.wav) · [Ubuntu 样音](samples/nvfp4-ubuntu-mixed.wav)
 
 - **在画布用**：保持 8195 运行，在同一台主机的 ComfyUI 打开 [07 中英实时语音](../example_workflows/07-中英实时语音.json)，先选 `zh` 或 `en`，填台词并点击「启用本机流式试听」，再排队。节点输出最终 AUDIO 和延迟报告。克隆自己的参考音或对某句话加耳语时打开 [08 实时音色与语气](../example_workflows/08-实时音色与语气.json)。
 - **从应用调用**：Base URL 填 `http://127.0.0.1:8195/v1`。其他机器用服务端实际配置的局域网 IP。请求 `response_format="pcm"` 可边收边播，`"wav"` 得到完整文件。两个平台的第一条合成命令见[安装部署](安装部署.md)，注册声音和 Hermes 配置见[实时 API](中英实时语音.md)。

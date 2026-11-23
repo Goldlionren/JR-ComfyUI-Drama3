@@ -19,7 +19,7 @@ $hermesPython = Join-Path $env:LOCALAPPDATA 'hermes\hermes-agent\venv\Scripts\py
 
 使用这份独立配置的会话会把语音请求发到 `http://127.0.0.1:8193/v1/audio/speech`。`base_url` 填到 `/v1` 即可，Hermes 会补上 `/audio/speech`。配置中的 `openai` 指 Hermes 内置供应商名称，`drama-3` 指实际运行模型。本机默认角色是 `default`，也可以在 `voice` 填入 `GET /v1/audio/voices` 返回的设计别名或已保存的角色 ID。配置内的固定占位字符串满足 Hermes SDK 对该字段的要求。[配置模板](../integrations/hermes/config.yaml) · [Hermes 配置说明](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)
 
-可以在工作区创建专用 profile。在**新的 PowerShell 窗口**从仓库根目录执行下面两行即可启动。关闭这个终端后，其他窗口与桌面程序继续使用它们原来的配置。[可复制的配置模板](../integrations/hermes/config.yaml)
+可以在工作区创建专用 profile。在**新的 PowerShell 窗口**从仓库根目录执行以下命令即可启动。关闭这个终端后，其他窗口与桌面程序继续使用它们原来的配置。[可复制的配置模板](../integrations/hermes/config.yaml)
 
 ```powershell
 New-Item -ItemType Directory -Force '.runtime/hermes-drama3' | Out-Null
