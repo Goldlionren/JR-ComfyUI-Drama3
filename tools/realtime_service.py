@@ -15,41 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from jr_benchmark_cases import FIXTURES, REFERENCES
 from jr_realtime_client import stream_speech
+from jr_realtime_paths import MODELS, engine_binary, model_file
+from jr_realtime_paths import RUNTIME as RUNTIME
 
-RUNTIME = ROOT / ".runtime"
 PORT = 8195
 ENGINE_PORT = 8196
-MODELS = {
-    "q4": ("Drama-35B-A3B-v3-Q4_K.gguf", "2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e"),
-    "nvfp4": (
-        "Drama3-V2-78e5ab7-NVFP4-256E.gguf",
-        "5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1",
-    ),
-}
 
 
 def verify(path, expected):
     with path.open("rb") as f:
         if hashlib.file_digest(f, "sha256").hexdigest() != expected:
             raise ValueError(f"SHA-256 mismatch: {path}")
-
-
-def engine_binary(backend):
-    if backend == "q4":
-        return RUNTIME / "speechcpp" / ("speech.exe" if os.name == "nt" else "speech")
-    build = "windows-cuda-release" if os.name == "nt" else "linux-cuda-release"
-    binary = "audiocpp_server.exe" if os.name == "nt" else "audiocpp_server"
-    return RUNTIME / "audio.cpp" / "build" / build / "bin" / binary
-
-
-def model_file(backend):
-    override = os.environ.get("JR_DRAMA3_NVFP4_MODEL") if backend == "nvfp4" else None
-    if override:
-        path = Path(override)
-        if not path.is_absolute():
-            raise ValueError("JR_DRAMA3_NVFP4_MODEL must be an absolute path to the GGUF file.")
-        return path
-    return RUNTIME / MODELS[backend][0]
 
 
 def command(backend):

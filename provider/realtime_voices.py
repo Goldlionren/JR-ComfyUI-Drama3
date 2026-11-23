@@ -12,7 +12,7 @@ from jr_voice_store import load_voice, save_voice
 
 
 def reference_text(value):
-    if not isinstance(value, str) or not 0 < len(value.strip()) <= 4096:
+    if not isinstance(value, str) or not 0 < len(value.strip()) <= 4096 or "\x00" in value:
         raise ValueError("Provide the exact reference_text for the recording (1–4096 characters).")
     return value.strip()
 
@@ -54,6 +54,16 @@ def register_voice(db, body):
     return {"id": version, "object": "voice", "source": "library", **meta}
 
 
+def reference_options(pcm, channels, rate, transcript):
+    # Inline and saved versions share an engine voice even when the source WAV has metadata.
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as w:
+        w.setparams((channels, 2, rate, 0, "NONE", ""))
+        w.writeframes(pcm)
+    data = base64.b64encode(wav.getvalue()).decode("ascii")
+    return {"voice_ref": {"type": "base64", "data": data}, "reference_text": transcript}
+
+
 def saved_options(db, version):
     samples, row = load_voice(db, version)
     transcript = reference_text(row["transcript"])
@@ -62,19 +72,12 @@ def saved_options(db, version):
     if samples.size * 2 + 44 > MAX_REF_BYTES:
         raise ValueError("Saved reference exceeds the realtime limit of 5 MiB. Save a shorter recording.")
     pcm = np.rint(samples[0].T * 32768).clip(-32768, 32767).astype("<i2")
-    wav = io.BytesIO()
-    with wave.open(wav, "wb") as w:
-        w.setparams((samples.shape[1], 2, row["sample_rate"], 0, "NONE", ""))
-        w.writeframes(pcm.tobytes())
-    data = base64.b64encode(wav.getvalue()).decode("ascii")
-    return {"voice_ref": {"type": "base64", "data": data}, "reference_text": transcript}
+    return reference_options(pcm.tobytes(), samples.shape[1], row["sample_rate"], transcript)
 
 
 def voice_options(body, backend, db=None):
     voice = body.get("voice", "zh")
     if is_saved_voice(voice):
-        if backend != "nvfp4":
-            raise ValueError("Select NVFP4 to use a saved voice ID.")
         if "voice_ref" in body or "reference_text" in body:
             raise ValueError("A saved voice ID already supplies its reference recording and transcript.")
         return saved_options(db, voice)
@@ -84,9 +87,9 @@ def voice_options(body, backend, db=None):
         if body.get("reference_text", "") != "":
             raise ValueError("reference_text needs a matching voice_ref recording.")
         return {"voice": voice}
-    if backend != "nvfp4":
-        raise ValueError("Select the NVFP4 backend to use a custom reference recording.")
     transcript = reference_text(body.get("reference_text"))
     ref = body["voice_ref"]
-    decode_reference(ref)
+    pcm, channels, rate = decode_reference(ref)
+    if backend == "q4":
+        return reference_options(pcm, channels, rate, transcript)
     return {"voice_ref": {"type": "base64", "data": ref["data"]}, "reference_text": transcript}

@@ -9,6 +9,7 @@ import struct
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import wave
 from io import BytesIO
 
@@ -217,10 +218,10 @@ class SentenceGatewayTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(resp.status, 400)
                 self.assertEqual(voice_options({"voice": expected}, "nvfp4", db), pair)
             async with TestClient(TestServer(create_app("q4", voice_db=db))) as client:
-                resp = await client.post("/v1/audio/speech", json={"input": "Hi.", "voice": expected})
-                self.assertEqual(resp.status, 400)
+                resp = await client.post("/v1/audio/voices", json=payload)
+                self.assertEqual((await resp.json())["id"], expected)
                 resp = await client.get("/v1/audio/voices")
-                self.assertEqual([v["id"] for v in (await resp.json())["data"]], ["zh", "en"])
+                self.assertEqual((await resp.json())["data"], rows)
 
     def test_direction_follows_each_speaker_and_chunk(self):
         text = "<|speaker:1|> 好的。稍等。<|speaker:0|> <whisper>On my way.</whisper>"
@@ -240,15 +241,83 @@ class SentenceGatewayTests(unittest.IsolatedAsyncioTestCase):
         ref = {"type": "base64", "data": base64.b64encode(buf.getvalue()).decode()}
         pair = {"voice_ref": ref, "reference_text": "Good morning."}
         self.assertEqual(voice_options(dict(voice="zh", **pair), "nvfp4"), pair)
-        for backend, invalid in [
-            ("q4", pair), ("nvfp4", {"voice_ref": ref}), ("nvfp4", {"reference_text": "orphan"}),
-            ("nvfp4", dict(pair, voice_ref={"type": "path", "path": "ignored.wav"})),
-            ("nvfp4", dict(pair, voice_ref={"type": "base64", "data": "%%%"})),
-            ("nvfp4", dict(pair, voice_ref={"type": "base64", "data": base64.b64encode(buf.getvalue()[:-20]).decode()})),
-        ]:
+        for backend in ("q4", "nvfp4"):
             async with TestClient(TestServer(create_app(backend))) as client:
-                resp = await client.post("/v1/audio/speech", json=dict(invalid, input="Hi."))
-                self.assertEqual(resp.status, 400, await resp.text())
+                for invalid in ({"voice_ref": ref}, {"reference_text": "orphan"},
+                                dict(pair, reference_text="bad\x00text"),
+                                dict(pair, voice_ref={"type": "path", "path": "ignored.wav"}),
+                                dict(pair, voice_ref={"type": "base64", "data": "%%%"}),
+                                dict(pair, voice_ref={"type": "base64", "data": base64.b64encode(buf.getvalue()[:-20]).decode()})):
+                    resp = await client.post("/v1/audio/speech", json=dict(invalid, input="Hi."))
+                    self.assertEqual(resp.status, 400, await resp.text())
+
+    async def test_q4_inline_and_saved_references_use_the_resident_engine(self):
+        loaded = {}
+        requests = []
+        fail_upload = True
+
+        async def models(request):
+            return web.json_response({"data": [{"id": "drama-3", "speech": {"voices": [
+                {"name": name} for name in loaded]}}]})
+
+        async def add(request):
+            form = await request.post()
+            if fail_upload:
+                return web.Response(status=500, text="registration failed")
+            loaded[form["name"]] = form["file"].file.read()
+            return web.json_response({"held": {}})
+
+        async def synthesize(request):
+            body = await request.json()
+            self.assertIn(body["voice"], loaded)
+            self.assertNotIn("voice_ref", body)
+            self.assertNotIn("reference_text", body)
+            requests.append(body)
+            return web.Response(text='data: {"type":"speech.audio.delta","audio":"AQA="}\n\n'
+                                     'data: {"type":"speech.audio.done","samples":1,"stop":"complete"}\n\n')
+
+        native = web.Application()
+        native.router.add_get("/v1/models", models)
+        native.router.add_post("/speech/voices", add)
+        native.router.add_post("/v1/audio/speech", synthesize)
+        buf = BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setparams((1, 2, 16000, 0, "NONE", ""))
+            w.writeframes(bytes(400))
+        # Extra RIFF metadata in an uploaded WAV is absent from the copy reconstructed from SQLite.
+        raw = buf.getvalue()
+        tagged = raw[:4] + struct.pack("<I", len(raw) + 4) + raw[8:12] + b"JUNK\x04\x00\x00\x00test" + raw[12:]
+        ref = {"type": "base64", "data": base64.b64encode(tagged).decode()}
+        pair = {"voice_ref": ref, "reference_text": "Morning."}
+        with tempfile.TemporaryDirectory() as tmp, patch("provider.q4_voice.encode_reference",
+                                                        return_value=b"GGUF fixture") as encode:
+            db = Path(tmp) / "voices.sqlite3"
+            async with TestServer(native) as engine, TestClient(TestServer(create_app("q4", engine.port, voice_db=db))) as client:
+                async def speak(fields):
+                    async with client.post("/v1/audio/speech", json=dict(
+                            input="你好。Hello.", instructions="whisper", seed=19, **fields)) as response:
+                        return response.status, await response.read()
+
+                self.assertEqual((await speak(pair))[0], 502)
+                self.assertFalse(requests)
+                fail_upload = False
+                complete = (200, b"\x01\x00" * 2)
+                self.assertEqual(await speak(pair), complete)
+                encode.assert_awaited_with(buf.getvalue(), "Morning.")
+                first = requests[0]["voice"]
+                self.assertEqual(loaded, {first: b"GGUF fixture"})
+                self.assertEqual([r["input"] for r in requests], ["[whisper] 你好。", "[whisper] Hello."])
+                self.assertEqual([r["seed"] for r in requests], [19, 20])
+                saved = await client.post("/v1/audio/voices", json=dict(name="Saved", **pair))
+                voice_id = (await saved.json())["id"]
+                self.assertEqual(await speak({"voice": voice_id}), complete)
+                self.assertEqual(requests[-1]["voice"], first)
+                self.assertEqual(encode.await_count, 2)  # Failed upload, then successful retry.
+                self.assertEqual(await speak(dict(pair, reference_text="Different.")), complete)
+                self.assertNotEqual(requests[-1]["voice"], first)
+                loaded.clear()  # An engine restart drops its native voices.
+                self.assertEqual(await speak({"voice": voice_id}), complete)
+                self.assertEqual(list(loaded), [first])
 
     async def test_audio_and_wav_preserve_both_sentences_and_seed_rollover(self):
         requests = []

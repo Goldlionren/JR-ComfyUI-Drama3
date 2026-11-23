@@ -23,10 +23,17 @@ fetch() {
     fi
 }
 
+model_variable=JR_DRAMA3_${backend^^}_MODEL
+model_path=${!model_variable:-}
+if [[ -n $model_path ]]; then
+    [[ $model_path = /* ]] || { echo "$model_variable must be an absolute GGUF path." >&2; exit 2; }
+    mkdir -p -- "$(dirname "$model_path")"
+fi
+
 if [[ $backend == q4 ]]; then
     model=Drama-35B-A3B-v3-Q4_K.gguf
     repo=https://huggingface.co/sakasegawa/drama-3-GGUF/resolve/9a01354d04ab6eb521bc9cdfc56ab6824c474af2
-    fetch "$repo/$model" "$model" 2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e
+    fetch "$repo/$model" "${model_path:-$model}" 2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e
     fetch https://github.com/nyosegawa/speech.cpp/releases/download/v0.11.2/speech-0.11.2-linux-x64-vulkan.zip \
         speechcpp-linux.zip 28e6841c650c8a4d7c5be06b8e34eb2f14d43f8b26d52fc73f24b504875dc12d
     unzip -oq speechcpp-linux.zip -d speechcpp
@@ -35,11 +42,8 @@ if [[ $backend == q4 ]]; then
 fi
 
 model=Drama3-V2-78e5ab7-NVFP4-256E.gguf
-model_path=${JR_DRAMA3_NVFP4_MODEL:-"$runtime/$model"}
-[[ $model_path = /* ]] || { echo "JR_DRAMA3_NVFP4_MODEL must be an absolute GGUF path." >&2; exit 2; }
-mkdir -p -- "$(dirname "$model_path")"
 repo=https://huggingface.co/WonderChord/Drama3-V2-NVFP4-256E-GGUF/resolve/06cfd87d3aa87cdd37e816fac6da485b8f6cbdb4
-fetch "$repo/$model" "$model_path" 5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1
+fetch "$repo/$model" "${model_path:-$model}" 5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1
 patch=drama3-nvfp4-audiocpp.patch
 fetch "$repo/$patch" "$patch" bbb0742a2beb7c06a7592efaa5dca74f8bb1ba3f25da57ca9d882b874f082c09
 commit=066ea9862f41f4d7bcf996d5f00e464d8d28ace5

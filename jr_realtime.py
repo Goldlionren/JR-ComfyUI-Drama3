@@ -33,7 +33,7 @@ class RealtimeSpeech(io.ComfyNode):
                 io.String.Input("instructions", display_name="整段语气", default="", optional=True,
                                 tooltip="填写简短的表演提示，如 whisper 或 icy calm。留空沿用自然语气。"),
                 io.Audio.Input("reference_audio", display_name="参考录音", optional=True,
-                               tooltip="NVFP4 自定义音色。连接加载音频或音色库的 AUDIO，并填写匹配的逐字稿。"),
+                               tooltip="自定义音色。连接加载音频或音色库的 AUDIO，并填写匹配的逐字稿。"),
                 io.String.Input("reference_text", display_name="参考录音逐字稿", multiline=True, default="",
                                 optional=True, tooltip="填写录音中实际说的话。要生成的新台词写在 text。"),
             ],

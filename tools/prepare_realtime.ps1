@@ -20,10 +20,16 @@ function Get-CheckedFile($url, $name, $sha, $destination = '') {
     return $dest
 }
 
+$modelVariable = "JR_DRAMA3_$($Backend.ToUpperInvariant())_MODEL"
+$modelPath = [Environment]::GetEnvironmentVariable($modelVariable)
+if ($modelPath -and $modelPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') {
+    throw "$modelVariable must be an absolute path to the GGUF file."
+}
+
 if ($Backend -eq 'q4') {
     $name = 'Drama-35B-A3B-v3-Q4_K.gguf'
     $repo = 'https://huggingface.co/sakasegawa/drama-3-GGUF/resolve/9a01354d04ab6eb521bc9cdfc56ab6824c474af2'
-    $null = Get-CheckedFile "$repo/$name" $name '2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e'
+    $null = Get-CheckedFile "$repo/$name" $name '2a57b14c9b208a2ff833ab7305b920ca8f154ad807004a52d96a86a90a55523e' $modelPath
     $zip = Get-CheckedFile 'https://github.com/nyosegawa/speech.cpp/releases/download/v0.11.2/speech-0.11.2-windows-x64-vulkan.zip' 'speechcpp-windows.zip' '2cf46f0351a2a90b9ce0bfb83cf63ac209ca31c88df9a5bc0126898a20a58586'
     Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $runtime 'speechcpp') -Force
     return
@@ -31,10 +37,6 @@ if ($Backend -eq 'q4') {
 
 $name = 'Drama3-V2-78e5ab7-NVFP4-256E.gguf'
 $repo = 'https://huggingface.co/WonderChord/Drama3-V2-NVFP4-256E-GGUF/resolve/06cfd87d3aa87cdd37e816fac6da485b8f6cbdb4'
-$modelPath = $env:JR_DRAMA3_NVFP4_MODEL
-if ($modelPath -and $modelPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)') {
-    throw 'JR_DRAMA3_NVFP4_MODEL must be an absolute path to the GGUF file.'
-}
 $null = Get-CheckedFile "$repo/$name" $name '5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1' $modelPath
 $patch = Get-CheckedFile "$repo/drama3-nvfp4-audiocpp.patch" 'drama3-nvfp4-audiocpp.patch' 'bbb0742a2beb7c06a7592efaa5dca74f8bb1ba3f25da57ca9d882b874f082c09'
 $src = Join-Path $runtime 'audio.cpp'

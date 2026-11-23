@@ -17,6 +17,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from jr_realtime_client import PORT, RATE, pcm_event
 from jr_script_core import MARKS, SPEAKER, apply_to_spoken, chunk_script
+from .q4_voice import load_q4_voice
 from .realtime_voices import register_voice, voice_options
 from .server import LAN_INTERFACE, LAN_NETWORKS, api_boundary, default_db
 from .speech import ApiError, catalog
@@ -109,13 +110,10 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
 
     async def list_voices(request):
         rows = [{"id": key, "object": "voice", "source": "preset"} for key in ("zh", "en")]
-        if backend == "nvfp4":
-            rows.extend(await asyncio.to_thread(catalog, db))
+        rows.extend(await asyncio.to_thread(catalog, db))
         return web.json_response({"object": "list", "data": rows})
 
     async def save_voice(request):
-        if backend != "nvfp4":
-            raise ApiError(400, "Select NVFP4 to register a voice.")
         try:
             body = await request.json()
             entry = await asyncio.to_thread(register_voice, db, body)
@@ -124,6 +122,8 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
         return web.json_response(entry)
 
     async def chunks(texts, voice, seed):
+        if backend == "q4" and "voice_ref" in voice:
+            voice = {"voice": await load_q4_voice(engine, base, voice["voice_ref"], voice["reference_text"])}
         for i, text in enumerate(texts):
             data = {
                 "model": MODEL,
