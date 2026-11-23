@@ -1,6 +1,8 @@
 # 用项目的 NVFP4 GGUF 加速语音生成
 
-要让 ComfyUI 或 Hermes 用上本项目从 Drama 3 教师转换的 **NVFP4 256E**，需要三样东西：固定版本的 GGUF、带配套补丁的 CUDA 推理引擎，以及启动参数 `--backend nvfp4`。服务在 GPU 上常驻模型，8195 接收请求并把生成的 PCM 分块送回客户端。ComfyUI 对应「中英实时语音」节点，Hermes 对应 `/v1/audio/speech`。
+**本页适用于只做推理。** 在 Windows 或 Ubuntu 上使用本项目已转换的 **NVFP4 256E**，直接下载或复用 GGUF，再编译带配套补丁的 CUDA 推理引擎，以 `--backend nvfp4` 启动即可。可以跳过 FP8 十五分片、模型转换和训练数据准备。
+
+服务在 GPU 上常驻模型，8195 接收请求并把生成的 PCM 分块送回客户端。ComfyUI 对应「中英实时语音」节点，Hermes 对应 `/v1/audio/speech`。如果目标是训练新权重，请看[训练准备与权重兼容性](安装部署.md#需要训练)。
 
 ## 1. 把 GGUF 放在哪台机器
 
