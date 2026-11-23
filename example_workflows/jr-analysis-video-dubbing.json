@@ -1,0 +1,717 @@
+{
+  "last_node_id": 12,
+  "last_link_id": 16,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadVideo",
+      "title": "选择原始视频",
+      "pos": [
+        0,
+        20
+      ],
+      "size": [
+        260,
+        160
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            1,
+            15
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadVideo"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "JRDrama3VideoAudio",
+      "title": "从视频提取第一条原声音轨",
+      "pos": [
+        320,
+        20
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "original_audio",
+          "type": "AUDIO",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3VideoAudio"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "JRDrama3SeparateStems",
+      "title": "离线分离人声和背景",
+      "pos": [
+        680,
+        20
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "vocal",
+          "type": "AUDIO",
+          "links": [
+            3,
+            4
+          ]
+        },
+        {
+          "name": "background",
+          "type": "AUDIO",
+          "links": [
+            14
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3SeparateStems"
+      },
+      "widgets_values": [
+        "cpu"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "JRDrama3LocalASR",
+      "title": "将原声转成有时间的台词",
+      "pos": [
+        1040,
+        20
+      ],
+      "size": [
+        320,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transcript",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "timed_segments_json",
+          "type": "STRING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3LocalASR"
+      },
+      "widgets_values": [
+        "Whisper small",
+        "auto",
+        "cpu",
+        ""
+      ]
+    },
+    {
+      "id": 5,
+      "type": "JRDrama3SpeakerTurns",
+      "title": "标注角色并提取每位的参考录音",
+      "pos": [
+        1410,
+        20
+      ],
+      "size": [
+        345,
+        205
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 4
+        },
+        {
+          "name": "timed_segments_json",
+          "type": "STRING",
+          "link": 5,
+          "widget": {
+            "name": "timed_segments_json"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "speaker_segments_json",
+          "type": "STRING",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "reference_cast",
+          "type": "DRAMA3_CAST",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3SpeakerTurns"
+      },
+      "widgets_values": [
+        "",
+        "",
+        0.6
+      ]
+    },
+    {
+      "id": 6,
+      "type": "JRDrama3DubbingScript",
+      "title": "离线英译中，可切换方向或逐行填译文",
+      "pos": [
+        1810,
+        20
+      ],
+      "size": [
+        370,
+        290
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "timed_segments_json",
+          "type": "STRING",
+          "link": 6,
+          "widget": {
+            "name": "timed_segments_json"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "speaker_script",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "subtitle_srt",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "translated_segments_json",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "timed_cues",
+          "type": "JR_DRAMA3_CUES",
+          "links": [
+            9,
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3DubbingScript"
+      },
+      "widgets_values": [
+        "",
+        "",
+        "",
+        "eng_Latn",
+        "zho_Hans",
+        "en → zh"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "JRDrama3Teacher",
+      "title": "10 月 29 日新版 FP8 教师",
+      "pos": [
+        1420,
+        360
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "teacher",
+          "type": "JR_DRAMA3_TEACHER",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "revision",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Teacher"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 8,
+      "type": "JRDrama3Batch",
+      "title": "按角色参考逐句配音",
+      "pos": [
+        2235,
+        20
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "teacher",
+          "type": "JR_DRAMA3_TEACHER",
+          "link": 7
+        },
+        {
+          "name": "cues",
+          "type": "JR_DRAMA3_CUES",
+          "link": 9
+        },
+        {
+          "name": "cast",
+          "type": "DRAMA3_CAST",
+          "link": 8
+        },
+        {
+          "name": "settings",
+          "type": "JR_DRAMA3_SAMPLING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "clips",
+          "type": "AUDIO",
+          "links": [
+            11
+          ],
+          "shape": 6
+        },
+        {
+          "name": "last_history",
+          "type": "JR_DRAMA3_HISTORY",
+          "links": []
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Batch"
+      },
+      "widgets_values": [
+        19,
+        "fixed",
+        "linked"
+      ]
+    },
+    {
+      "id": 9,
+      "type": "JRDrama3CollectTakes",
+      "title": "收集逐句录音",
+      "pos": [
+        2580,
+        20
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "cues",
+          "type": "JR_DRAMA3_CUES",
+          "link": 10
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "timeline",
+          "type": "JR_DRAMA3_TIMELINE",
+          "links": [
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3CollectTakes"
+      },
+      "widgets_values": [
+        "{}"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "JRDrama3MixTimeline",
+      "title": "按原字幕区间安排对白",
+      "pos": [
+        2940,
+        20
+      ],
+      "size": [
+        320,
+        210
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "timeline",
+          "type": "JR_DRAMA3_TIMELINE",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "srt",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "timing_json",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3MixTimeline"
+      },
+      "widgets_values": [
+        44100,
+        "time_stretch",
+        2.0,
+        "mix",
+        0,
+        ""
+      ]
+    },
+    {
+      "id": 11,
+      "type": "JRDrama3DubMix",
+      "title": "配音叠回原背景",
+      "pos": [
+        3310,
+        20
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "dub",
+          "type": "AUDIO",
+          "link": 13
+        },
+        {
+          "name": "background",
+          "type": "AUDIO",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mixed_audio",
+          "type": "AUDIO",
+          "links": [
+            16
+          ]
+        },
+        {
+          "name": "mix_info",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3DubMix"
+      },
+      "widgets_values": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 12,
+      "type": "JRDrama3ReplaceTrack",
+      "title": "按原帧与时间戳直接保存译配 MKV",
+      "pos": [
+        3670,
+        20
+      ],
+      "size": [
+        310,
+        160
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "original_video",
+          "type": "VIDEO",
+          "link": 15
+        },
+        {
+          "name": "mixed_audio",
+          "type": "AUDIO",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "dubbed_video",
+          "type": "VIDEO",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3ReplaceTrack"
+      },
+      "widgets_values": [
+        true,
+        "video/JR-Drama3/dub"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "VIDEO"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "AUDIO"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "AUDIO"
+    ],
+    [
+      4,
+      3,
+      0,
+      5,
+      0,
+      "AUDIO"
+    ],
+    [
+      5,
+      4,
+      1,
+      5,
+      1,
+      "STRING"
+    ],
+    [
+      6,
+      5,
+      0,
+      6,
+      0,
+      "STRING"
+    ],
+    [
+      7,
+      7,
+      0,
+      8,
+      0,
+      "JR_DRAMA3_TEACHER"
+    ],
+    [
+      8,
+      5,
+      1,
+      8,
+      2,
+      "DRAMA3_CAST"
+    ],
+    [
+      9,
+      6,
+      3,
+      8,
+      1,
+      "JR_DRAMA3_CUES"
+    ],
+    [
+      10,
+      6,
+      3,
+      9,
+      0,
+      "JR_DRAMA3_CUES"
+    ],
+    [
+      11,
+      8,
+      0,
+      9,
+      1,
+      "AUDIO"
+    ],
+    [
+      12,
+      9,
+      0,
+      10,
+      0,
+      "JR_DRAMA3_TIMELINE"
+    ],
+    [
+      13,
+      10,
+      0,
+      11,
+      0,
+      "AUDIO"
+    ],
+    [
+      14,
+      3,
+      1,
+      11,
+      1,
+      "AUDIO"
+    ],
+    [
+      15,
+      1,
+      0,
+      12,
+      0,
+      "VIDEO"
+    ],
+    [
+      16,
+      11,
+      0,
+      12,
+      1,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6,
+      "offset": [
+        60,
+        75
+      ]
+    }
+  },
+  "version": 0.4
+}

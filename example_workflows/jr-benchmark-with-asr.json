@@ -1,0 +1,409 @@
+{
+  "last_node_id": 6,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "JRDrama3Teacher",
+      "title": "本地 FP8 教师",
+      "pos": [
+        0,
+        50
+      ],
+      "size": [
+        340,
+        220
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "teacher",
+          "type": "JR_DRAMA3_TEACHER",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "revision",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Teacher"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "JRDrama3Benchmark",
+      "title": "三条固定样本 · 每条冷/热各一次",
+      "pos": [
+        405,
+        50
+      ],
+      "size": [
+        340,
+        220
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "teacher",
+          "type": "JR_DRAMA3_TEACHER",
+          "link": 1
+        },
+        {
+          "name": "settings",
+          "type": "JR_DRAMA3_SAMPLING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "clips",
+          "type": "AUDIO",
+          "links": [
+            2,
+            4,
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "target_text",
+          "type": "STRING",
+          "links": [
+            6
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "run_id",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "report_json",
+          "type": "STRING",
+          "links": [
+            3
+          ],
+          "slot_index": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Benchmark"
+      },
+      "widgets_values": [
+        "all",
+        "cold_and_warm",
+        ""
+      ]
+    },
+    {
+      "id": 3,
+      "type": "SaveAudio",
+      "title": "保存每条测试音频",
+      "pos": [
+        810,
+        -190
+      ],
+      "size": [
+        340,
+        220
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveAudio"
+      },
+      "widgets_values": [
+        "JR-Drama3/benchmarks/take"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "JRDrama3BenchmarkReport",
+      "title": "归档 JSON 与听审笔记",
+      "pos": [
+        1600,
+        180
+      ],
+      "size": [
+        340,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "report_json",
+          "type": "STRING",
+          "link": 3,
+          "widget": {
+            "name": "report_json"
+          }
+        },
+        {
+          "name": "reviews_json",
+          "type": "STRING",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "full_report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "report_file",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3BenchmarkReport"
+      },
+      "widgets_values": [
+        "",
+        ""
+      ]
+    },
+    {
+      "id": 5,
+      "type": "JRDrama3LocalASR",
+      "title": "Whisper 本地回读",
+      "pos": [
+        810,
+        90
+      ],
+      "size": [
+        340,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transcript",
+          "type": "STRING",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "timed_segments_json",
+          "type": "STRING",
+          "links": [
+            8
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3LocalASR"
+      },
+      "widgets_values": [
+        "Whisper small",
+        "auto",
+        "cpu",
+        ""
+      ]
+    },
+    {
+      "id": 6,
+      "type": "JRDrama3ReadbackCheck",
+      "title": "按相同顺序比对每条读稿",
+      "pos": [
+        1205,
+        100
+      ],
+      "size": [
+        340,
+        220
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 5
+        },
+        {
+          "name": "expected_text",
+          "type": "STRING",
+          "link": 6,
+          "widget": {
+            "name": "expected_text"
+          }
+        },
+        {
+          "name": "recognized_text",
+          "type": "STRING",
+          "link": 7,
+          "widget": {
+            "name": "recognized_text"
+          }
+        },
+        {
+          "name": "asr_segments_json",
+          "type": "STRING",
+          "link": 8,
+          "widget": {
+            "name": "asr_segments_json"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "review_json",
+          "type": "STRING",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "retry_requested",
+          "type": "BOOLEAN",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3ReadbackCheck"
+      },
+      "widgets_values": [
+        "",
+        "",
+        -46,
+        0.8,
+        0.2,
+        0,
+        0,
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "JR_DRAMA3_TEACHER"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "AUDIO"
+    ],
+    [
+      3,
+      2,
+      3,
+      4,
+      0,
+      "STRING"
+    ],
+    [
+      4,
+      2,
+      0,
+      5,
+      0,
+      "AUDIO"
+    ],
+    [
+      5,
+      2,
+      0,
+      6,
+      0,
+      "AUDIO"
+    ],
+    [
+      6,
+      2,
+      1,
+      6,
+      1,
+      "STRING"
+    ],
+    [
+      7,
+      5,
+      0,
+      6,
+      2,
+      "STRING"
+    ],
+    [
+      8,
+      5,
+      1,
+      6,
+      3,
+      "STRING"
+    ],
+    [
+      9,
+      6,
+      0,
+      4,
+      1,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.68,
+      "offset": [
+        85,
+        230
+      ]
+    }
+  },
+  "version": 0.4
+}

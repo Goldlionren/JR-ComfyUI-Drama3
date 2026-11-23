@@ -1,0 +1,27 @@
+{
+  "last_node_id": 1,
+  "last_link_id": 0,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "JRDrama3Realtime",
+      "pos": [100, 100],
+      "size": [530, 330],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "audio", "type": "AUDIO", "links": [], "slot_index": 0},
+        {"name": "report", "type": "STRING", "links": [], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "JRDrama3Realtime"},
+      "widgets_values": ["林老师说，please check the blue folder，我们下午三点见。", "zh", 37003, "fixed", true]
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

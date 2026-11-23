@@ -1,0 +1,9 @@
+Built with Fish Audio
+
+These Fish Audio Materials are licensed under the Fish Audio Community License, Version 1.0. Copyright © 39 AI, INC. All Rights Reserved.
+
+JR Drama 3 uses the published, unmodified Fish Audio Drama 3 teacher weights and
+Fish Speech model classes, codec architecture and FP8 kernels. The local adapter
+adds CPU expert staging, ComfyUI integration and interactive sampling for
+generation, editing and incremental text. The model and runtime are installed
+separately. See licenses/Fish-Audio-Community-License.txt.

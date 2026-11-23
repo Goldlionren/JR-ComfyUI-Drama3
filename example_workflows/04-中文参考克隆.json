@@ -1,0 +1,263 @@
+{
+  "last_node_id": 5,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "JRDrama3Teacher",
+      "title": "新版 FP8 教师",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        315,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "teacher",
+          "type": "JR_DRAMA3_TEACHER",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "revision",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Teacher"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadAudio",
+      "title": "载入你要使用的参考录音",
+      "pos": [
+        0,
+        210
+      ],
+      "size": [
+        315,
+        110
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 3,
+      "type": "JRDrama3Reference",
+      "title": "填写参考录音的准确逐字稿",
+      "pos": [
+        355,
+        170
+      ],
+      "size": [
+        315,
+        257
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "cast",
+          "type": "DRAMA3_CAST",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Reference"
+      },
+      "widgets_values": [
+        "林",
+        0,
+        "这里填写参考音频中实际说出的文字。",
+        "平静的声音",
+        "zh"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "JRDrama3Generate",
+      "title": "用参考声音说新台词",
+      "pos": [
+        725,
+        0
+      ],
+      "size": [
+        315,
+        269
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "teacher",
+          "type": "JR_DRAMA3_TEACHER",
+          "link": 1
+        },
+        {
+          "name": "cast",
+          "type": "DRAMA3_CAST",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "history",
+          "type": "JR_DRAMA3_HISTORY",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "JRDrama3Generate"
+      },
+      "widgets_values": [
+        "<|speaker:0|> 欢迎回来，我们继续录音。",
+        "line",
+        "",
+        184,
+        "fixed",
+        false
+      ]
+    },
+    {
+      "id": 5,
+      "type": "PreviewAudio",
+      "title": "试听",
+      "pos": [
+        1100,
+        0
+      ],
+      "size": [
+        315,
+        110
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAudio"
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "JR_DRAMA3_TEACHER"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "AUDIO"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      1,
+      "DRAMA3_CAST"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      0,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.77,
+      "offset": [
+        30,
+        80
+      ]
+    }
+  },
+  "version": 0.4
+}

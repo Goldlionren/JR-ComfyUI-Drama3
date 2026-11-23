@@ -1,0 +1,11 @@
+tts:
+  provider: openai
+  openai:
+    base_url: http://127.0.0.1:8193/v1
+    api_key: drama3-local-placeholder
+    model: drama-3
+    voice: default
+    speed: 1.0
+    pcm_sample_rate: 24000
+  streaming:
+    provider: openai
