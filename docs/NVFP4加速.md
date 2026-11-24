@@ -19,7 +19,7 @@
 
 ## 2. 准备并启动
 
-先按[安装部署](安装部署.md)准备 Python、Git、完整 CUDA 13 Toolkit、当前平台的 C++ 工具链及 CMake/Ninja。精简安装还应包含 CUDA Runtime、cuBLAS 和 cuFFT 的开发库；配置阶段出现 `CUDA::cufft` 表示编译器已找到，但当前 Toolkit 缺少 cuFFT 开发库或 CMake 指向了另一套 Toolkit。标准编译目标为 `120a`。以下命令都在项目根目录执行。**使用默认位置时，跳过设置模型变量的那一行。** 已有模型放在自定义模型盘时只需设置变量，脚本校验通过后会复用它。
+先准备 Python、Git、完整 CUDA 13 Toolkit、当前平台的 C++ 工具链及 CMake/Ninja。精简安装还应包含 CUDA Runtime、cuBLAS 和 cuFFT 的开发库。配置阶段找不到 `CUDA::cufft` 时，请核对 cuFFT 开发库和 CMake 选用的 Toolkit。当前脚本编译 `86-real`、`89-real`、`120a-real` 三个目标。以下命令都在项目根目录执行。使用默认模型位置时跳过设置模型变量的那一行。自定义模型盘上的现有文件校验通过后会被复用。[安装部署](安装部署.md)
 
 **Windows PowerShell**
 

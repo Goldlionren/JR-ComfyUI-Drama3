@@ -1,0 +1,21 @@
+[Unit]
+Description=Drama 3 realtime TTS for %i
+After=network.target
+RequiresMountsFor=/opt/JR-ComfyUI-Drama3 /var/lib/drama3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=%i
+WorkingDirectory=/opt/JR-ComfyUI-Drama3
+Environment=DRAMA3_BACKEND=5lang
+Environment=JR_DRAMA3_VRAM_GIB=12
+Environment=JR_DRAMA3_VOICE_DB=/var/lib/drama3/voices.sqlite3
+EnvironmentFile=-/etc/default/drama3-tts
+ExecStart=/opt/JR-ComfyUI-Drama3/.venv/bin/python -B tools/realtime_service.py start --backend ${DRAMA3_BACKEND}
+ExecStop=/opt/JR-ComfyUI-Drama3/.venv/bin/python -B tools/realtime_service.py stop
+TimeoutStartSec=10min
+TimeoutStopSec=2min
+
+[Install]
+WantedBy=multi-user.target

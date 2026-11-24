@@ -1,0 +1,22 @@
+<service>
+  <id>Drama3TTS</id>
+  <name>Drama 3 TTS</name>
+  <description>OpenAI-compatible speech API on port 8195</description>
+  <env name="DRAMA3_ROOT" value="F:\AI\JR-ComfyUI-Drama3"/>
+  <env name="DRAMA3_BACKEND" value="5lang"/>
+  <env name="JR_DRAMA3_VRAM_GIB" value="12"/>
+  <env name="JR_DRAMA3_VOICE_DB" value="%ProgramData%\Drama3-Data\voices.sqlite3"/>
+  <workingdirectory>%DRAMA3_ROOT%</workingdirectory>
+  <executable>%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe</executable>
+  <startarguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%DRAMA3_ROOT%\docs\services\wait-gateway.ps1"</startarguments>
+  <stopexecutable>%DRAMA3_ROOT%\.venv\Scripts\python.exe</stopexecutable>
+  <stoparguments>-B "%DRAMA3_ROOT%\tools\realtime_service.py" stop</stoparguments>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart/>
+  <serviceaccount>
+    <domain>NT AUTHORITY</domain>
+    <user>LocalService</user>
+  </serviceaccount>
+  <logpath>%ProgramData%\Drama3-Data\logs</logpath>
+  <log mode="roll"/>
+</service>
