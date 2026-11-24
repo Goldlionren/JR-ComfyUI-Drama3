@@ -38,9 +38,20 @@ def read_record(name):
     record = json.loads(file.read_text("utf-8"))
     try:
         process = psutil.Process(record["pid"])
-        if (process.create_time() == record["created"] and
-                process.cmdline() == record["command"] and process.is_running()):
-            return process
+        if process.create_time() == record["created"] and process.is_running():
+            command = process.cmdline()
+            if command and command == record["command"]:
+                return process
+            # Older Linux launches could capture an empty /proc cmdline at exec.
+            # Only recover a native engine after matching its installation and arguments.
+            if name == "realtime-engine" and record["command"] == [] and command and Path(process.cwd()) == ROOT:
+                from jr_realtime_paths import engine_binary
+                for backend in ("5lang", "nvfp4"):
+                    if command == [str(engine_binary(backend)), "--config", str(STATE / f"realtime-{backend}.json")]:
+                        return process
+                if (command[:2] == [str(engine_binary("q4")), "serve"]
+                        and ("--port", "8196") in zip(command, command[1:])):
+                    return process
     except psutil.NoSuchProcess:
         pass
     return None
@@ -65,7 +76,8 @@ def start(name, args, env, port, ready_path):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 start_new_session=os.name != "nt")
         current = psutil.Process(child.pid)
-        record = dict(pid=child.pid, created=current.create_time(), command=current.cmdline())
+        # At exec Linux may expose an empty cmdline briefly. We already know exactly what we launched.
+        record = dict(pid=child.pid, created=current.create_time(), command=list(map(os.fspath, args)))
         tmp = STATE / (name + ".tmp")
         tmp.write_text(json.dumps(record), "utf-8")
         tmp.replace(STATE / (name + ".json"))

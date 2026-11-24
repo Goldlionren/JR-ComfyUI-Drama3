@@ -10,6 +10,8 @@ import tempfile
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+from .jr_realtime_paths import PUBLIC_MODELS
+
 
 class IncompleteTakeError(ValueError):
     """A sampled take cannot be delivered, locked or used as history."""
@@ -17,7 +19,8 @@ class IncompleteTakeError(ValueError):
 
 def is_complete(report):
     reason = report.get("finish_reason")
-    return reason == "eos" or (reason == "empty_infill" and report.get("mode") == "infill")
+    return (reason == "eos" or (reason == "complete" and report.get("model") in PUBLIC_MODELS)
+            or (reason == "empty_infill" and report.get("mode") == "infill"))
 
 
 def require_complete(report):

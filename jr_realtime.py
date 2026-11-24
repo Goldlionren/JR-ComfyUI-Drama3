@@ -1,19 +1,15 @@
 """ComfyUI node for the resident local quantized Drama 3 service."""
 
 from contextlib import closing
-from io import BytesIO
 import json
 import time
-import wave
 
 from comfy import model_management
 from comfy_api.latest import io, ui
-import numpy as np
-import torch
 
-from .jr_delivery_audio import samples
+from .jr_gguf import pcm_wave, reference_wav
 from .jr_generate import CATEGORY, _preview_events, seed_input
-from .jr_realtime_client import MAX_REF_BYTES, PRESET_VOICES, RATE, stream_speech
+from .jr_realtime_client import PRESET_VOICES, RATE, stream_speech
 from .jr_realtime_paths import PUBLIC_MODELS
 
 
@@ -59,7 +55,7 @@ class RealtimeSpeech(io.ComfyNode):
         first_pcm = None
         start = time.perf_counter()
         try:
-            wav = _reference_wav(reference_audio) if reference_audio is not None else None
+            wav = reference_wav(reference_audio) if reference_audio is not None else None
             with closing(stream_speech(text, voice, seed, instructions=instructions,
                                        reference_wav=wav, reference_text=reference_text, model=model)) as chunks:
                 for pcm in chunks:
@@ -68,7 +64,7 @@ class RealtimeSpeech(io.ComfyNode):
                         first_pcm = time.perf_counter() - start
                     samples.extend(pcm)
                     if preview:
-                        preview({"sample_rate": RATE, "waveform": _wave(bytearray(pcm))})
+                        preview({"sample_rate": RATE, "waveform": pcm_wave(bytearray(pcm))})
         finally:
             finish()
         seconds = len(samples) / (2 * RATE)
@@ -81,21 +77,5 @@ class RealtimeSpeech(io.ComfyNode):
             "seed": seed,
             "model": model,
         }
-        audio = {"sample_rate": RATE, "waveform": _wave(samples)}
+        audio = {"sample_rate": RATE, "waveform": pcm_wave(samples)}
         return io.NodeOutput(audio, json.dumps(report, ensure_ascii=False), ui=ui.PreviewAudio(audio, cls=cls))
-
-
-def _wave(pcm):
-    return torch.frombuffer(pcm, dtype=torch.int16).reshape(1, 1, -1).float().div_(32768)
-
-
-def _reference_wav(audio):
-    x, rate = samples(audio)
-    if len(x) * 2 + 44 > MAX_REF_BYTES:
-        raise ValueError("参考 WAV 最大为 5 MiB，请先裁剪参考录音。")
-    mono = np.rint(x.mean(axis=1) * 32768).clip(-32768, 32767).astype("<i2")
-    buffer = BytesIO()
-    with wave.open(buffer, "wb") as w:
-        w.setparams((1, 2, rate, 0, "NONE", ""))
-        w.writeframes(mono.tobytes())
-    return buffer.getvalue()

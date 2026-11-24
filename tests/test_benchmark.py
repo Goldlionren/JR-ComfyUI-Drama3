@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -77,11 +78,12 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIsNone(data["runs"][-1]["first_stream_pcm_seconds"])
         with tempfile.TemporaryDirectory() as directory:
             reviews = [json.dumps({"expected": s}) for s in text]
-            body, archive = bench.finalize_report(raw, reviews, "reviewed", directory)
+            with patch("folder_paths.get_output_directory", return_value=directory):
+                body, archive = bench.JRDrama3BenchmarkReport.execute([raw], ["reviewed"], reviews).result
             self.assertEqual(json.loads(body)["runs"][2]["readback_review"]["expected"], text[2])
             self.assertEqual(Path(archive).read_text(encoding="utf-8"), body)
             self.assertEqual(json.loads(body)["listening_notes"], "reviewed")
-            self.assertEqual(archive, bench.finalize_report(raw, reviews, "reviewed", directory)[1])
+            self.assertEqual(archive, bench.finalize_report(raw, reviews, "reviewed", Path(archive).parent)[1])
             with self.assertRaises(ValueError):
                 bench.finalize_report(raw, reviews[:2], "incomplete", directory)
 

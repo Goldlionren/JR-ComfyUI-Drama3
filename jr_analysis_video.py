@@ -16,7 +16,7 @@ import uuid
 import numpy as np
 import soundfile as sf
 
-from .jr_analysis_asr import AUX, LOCAL_GPT, ordered_segments, source_path
+from .jr_analysis_asr import AUX, gpt_sovits_roots, ordered_segments, source_path
 from .jr_delivery_audio import as_audio, convert, resample, samples
 
 
@@ -252,7 +252,7 @@ def remux(video, audio, output_dir, prefix="jr-drama3-dub"):
 
 def separate_stems(audio, device="cpu"):
     runner = Path(__file__).with_name("jr_analysis_roformer.py")
-    app = source_path("", "JR_DRAMA3_GPT_SOVITS_DIR", [LOCAL_GPT], directory=True)
+    app = source_path("", "JR_DRAMA3_GPT_SOVITS_DIR", gpt_sovits_roots(), directory=True)
     model = source_path(
         "",
         "JR_DRAMA3_BSROFORMER_PATH",

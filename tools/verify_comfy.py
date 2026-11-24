@@ -12,11 +12,11 @@ def node(kind, **inputs):
     return {"class_type": kind, "inputs": inputs}
 
 
-def prompt_for(case):
+def prompt_for(case, model="FP8"):
     text = {"zh": "你好，欢迎回来。", "en": "Welcome home.", "mixed": "你好，Alex。Welcome home.",
             "design": "This is my voice.", "revise": "Welcome home.",
             "clone": "<|speaker:0|> The train is here."}
-    graph = {"1": node("JRDrama3Teacher", directory=""),
+    graph = {"1": node("JRDrama3Teacher", directory="", model=model),
              "2": node("JRDrama3Sampling", temperature=0.7, top_p=0.9, top_k=0, max_frames=180)}
     def generate(text, mode="line", direction="", seed=184, **other):
         return node("JRDrama3Generate", teacher=["1",0], settings=["2",0], text=text, seed=seed,
@@ -73,8 +73,10 @@ def execute(base, graph, dest, case):
     descriptor=outputs["4"]["audio"][0]
     with urlopen(base+"/view?"+urlencode(descriptor), timeout=60) as r:
         content=r.read()
-    if record.get("finish_reason") != "eos":
-        raise RuntimeError(f"{case}: teacher stopped with {record.get('finish_reason')!r} (prompt {pid})")
+    model = graph["1"]["inputs"].get("model", "FP8")
+    expected = "eos" if model == "FP8" else "complete"
+    if record.get("finish_reason") != expected or (model != "FP8" and record.get("model") != model):
+        raise RuntimeError(f"{case}: unexpected model or finish status for {model} (prompt {pid}): {record}")
     if record.get("seconds",0) <= 0 or not content:
         raise RuntimeError(f"{case}: empty output (prompt {pid})")
     dest.mkdir(parents=True,exist_ok=True)
@@ -89,7 +91,8 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases",nargs="+",choices=["zh","en","mixed","scene","clone","design","revise","infill"])
     parser.add_argument("--port",type=int,default=8297)
+    parser.add_argument("--model", choices=["FP8", "drama-3-5lang", "drama-3-nvfp4", "drama-3-q4"], default="FP8")
     parser.add_argument("--dest",type=Path,default=Path("outputs/teacher-validation"))
     args=parser.parse_args()
     for case in args.cases:
-        execute(f"http://127.0.0.1:{args.port}", prompt_for(case), args.dest, case)
+        execute(f"http://127.0.0.1:{args.port}", prompt_for(case, args.model), args.dest, case)

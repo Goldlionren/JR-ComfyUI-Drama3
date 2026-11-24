@@ -11,12 +11,53 @@ MAX_REF_BYTES = 5 * 1024 * 1024
 PRESET_VOICES = ("zh", "en", "ja", "ko", "yue")
 
 
+class IncompleteSpeechError(RuntimeError):
+    """A stream did not establish a complete take for playback or caching."""
+
+
 def is_saved_voice(voice):
     return isinstance(voice, str) and re.fullmatch(r"[0-9a-f]{64}", voice) is not None
 
 
+def installed_model(model):
+    """Resolve the exact package in the gateway's environment, including its five-language receipt."""
+    conn = HTTPConnection("127.0.0.1", PORT, timeout=10)
+    try:
+        conn.request("GET", "/v1/models")
+        response = conn.getresponse()
+        if response.status != 200:
+            raise RuntimeError(f"读取量化模型清单失败，HTTP {response.status}。")
+        for row in json.load(response)["data"]:
+            if row["id"] == model and row.get("installed"):
+                digest = row.get("sha256")
+                if not is_saved_voice(digest):
+                    raise ValueError("网关缺少模型指纹。请更新并重启 8195，五语 GGUF 旁需保留 .gguf.sha256。")
+                return digest
+        raise ValueError(f"8195 未安装 {model}，请先准备对应 GGUF 和原生引擎。")
+    except ConnectionRefusedError as exc:
+        raise RuntimeError("请先运行 tools/realtime_service.py start 启动量化服务。") from exc
+    finally:
+        conn.close()
+
+
+def unload_model(model, *, if_active=False):
+    conn = HTTPConnection("127.0.0.1", PORT, timeout=60)
+    try:
+        conn.request("POST", "/v1/models/unload", json.dumps({"model": model}), {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        if if_active and response.status == 409:
+            return None
+        if response.status != 200:
+            raise RuntimeError(f"HTTP {response.status}: {response.read(1024).decode(errors='replace')}")
+        return json.load(response)
+    finally:
+        conn.close()
+
+
 def pcm_event(event, sample_count):
     kind = event.get("type")
+    if kind == "error" and event.get("code") == "incomplete_speech":
+        raise IncompleteSpeechError(event["message"])
     if kind == "speech.audio.delta":
         pcm = base64.b64decode(event["audio"], validate=True)
         if not pcm or len(pcm) % 2:
@@ -28,18 +69,18 @@ def pcm_event(event, sample_count):
             or event.get("stop", "complete") != "complete"
             or event.get("samples", sample_count) != sample_count
         ):
-            raise RuntimeError(f"Incomplete speech: {event}")
+            raise IncompleteSpeechError(f"Incomplete speech: {event}")
         return None
     raise RuntimeError(f"Unexpected speech event: {str(event)[:500]}")
 
 
-def stream_speech(text, voice, seed, *, port=PORT, instructions="", reference_wav=None, reference_text="",
-                  model="drama-3"):
+def stream_speech(text, voice, seed, *, port=None, instructions="", reference_wav=None, reference_text="",
+                  model="drama-3", sampling=None, previous_take=None):
     if not isinstance(text, str) or len(text) > 4096:
         raise ValueError("台词必须为字符串，最多 4096 个字符。")
-    if voice not in PRESET_VOICES and not is_saved_voice(voice):
+    if voice not in (*PRESET_VOICES, "none") and not is_saved_voice(voice):
         raise ValueError("请选择内置音色或已保存的完整音色 ID。")
-    conn = HTTPConnection("127.0.0.1", port, timeout=300)
+    conn = HTTPConnection("127.0.0.1", PORT if port is None else port, timeout=300)
     try:
         conn.request("GET", "/v1/models")
         models = conn.getresponse()
@@ -62,6 +103,12 @@ def stream_speech(text, voice, seed, *, port=PORT, instructions="", reference_wa
         }
         if instructions:
             req["instructions"] = instructions
+        if sampling is not None:
+            if not public:
+                raise ValueError("Use the managed Drama 3 gateway for sampling controls.")
+            req["sampling"] = sampling
+        if previous_take is not None:
+            req["previous_take"] = previous_take
         if reference_wav is not None:
             if len(reference_wav) > MAX_REF_BYTES:
                 raise ValueError("参考 WAV 最大为 5 MiB，请先裁剪参考录音。")
@@ -77,7 +124,16 @@ def stream_speech(text, voice, seed, *, port=PORT, instructions="", reference_wa
         )
         response = conn.getresponse()
         if response.status != 200:
-            raise RuntimeError(f"HTTP {response.status}: {response.read(2048).decode(errors='replace')}")
+            detail = response.read(2048).decode(errors="replace")
+            if response.status == 502:
+                try:
+                    body = json.loads(detail)
+                except ValueError:
+                    body = {}
+                error = body.get("error") if isinstance(body, dict) else None
+                if isinstance(error, dict) and error.get("code") == "incomplete_speech":
+                    raise IncompleteSpeechError(str(error.get("message", detail)))
+            raise RuntimeError(f"HTTP {response.status}: {detail}")
         if "text/event-stream" not in response.getheader("Content-Type", ""):
             raise RuntimeError("量化服务没有返回流式音频事件。")
         sample_count = 0

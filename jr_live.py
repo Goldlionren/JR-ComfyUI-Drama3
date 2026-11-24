@@ -13,6 +13,7 @@ from comfy import model_management
 from comfy.utils import ProgressBar
 from .jr_generate import CATEGORY, MODEL, CAST, SETTINGS, HISTORY, DEFAULTS, seed_input, _preview_events, _references
 from .jr_teacher import FlaTeacherPath
+from .jr_gguf import QuantizedModel, render_line
 
 _active = {}
 _lock = threading.Lock()
@@ -58,7 +59,7 @@ class LiveText(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(node_id="JRDrama3LiveText", display_name="Drama 3 · 实时追加台词",
                          category=CATEGORY, is_output_node=True,
-                         description="排队后可从此节点送入新台词。教师预读下一段，点击结束后合成末段。",
+                         description="画布可追加或结束台词。FP8 预读下一段。五语、NVFP4 回传上一段音频。Q4 逐段使用角色参考。",
                          hidden=[io.Hidden.unique_id],
                          inputs=[MODEL.Input("teacher"), io.String.Input("first_line", multiline=True),
                                  seed_input(), io.Boolean.Input("live", default=True),
@@ -74,7 +75,6 @@ class LiveText(io.ComfyNode):
     def execute(cls, teacher, first_line, seed, live, idle_seconds, cast=None, settings=None):
         from server import PromptServer
         from comfy_api.latest import ui
-        from .jr_runtime import synthesize_stream
         if not first_line.strip():
             raise ValueError("请先填写第一段台词。")
         server = PromptServer.instance
@@ -110,6 +110,27 @@ class LiveText(io.ComfyNode):
         stream, finish = _preview_events(live)
         try:
             server.send_sync("jr.drama3.text", {**event, "active": True}, sid=client)
+            if isinstance(teacher, QuantizedModel):
+                import torch
+                from .jr_realtime_client import RATE
+                clips, segments = [], []
+                cursor = 0
+                linked = teacher.id != "drama-3-q4"
+                history = None
+                for i, line in enumerate(chunks()):
+                    mode = "continue" if i and linked else "line"
+                    audio, history, info = render_line(teacher, line, (seed + i) % 2**32, mode, "",
+                                                       cast, opts, stream, check, history)
+                    wave = audio["waveform"]
+                    clips.append(wave)
+                    segments.append({"text": line, "start_sample": cursor, "end_sample": cursor + wave.shape[-1],
+                                     "finish_reason": info["finish_reason"]})
+                    cursor += wave.shape[-1]
+                audio = {"waveform": torch.cat(clips, dim=-1), "sample_rate": RATE}
+                report = {"model": teacher.id, "seed": seed, "segments": segments,
+                          "continuity": "previous_take" if linked else "independent"}
+                return io.NodeOutput(audio, history, json.dumps(report, ensure_ascii=False), ui=ui.PreviewAudio(audio, cls=cls))
+            from .jr_runtime import synthesize_stream
             result = synthesize_stream(teacher, chunks(), _references(cast), seed, **opts,
                         use_fla=isinstance(teacher, FlaTeacherPath),
                         progress=progress.update_absolute, stream=stream, cancel=check)

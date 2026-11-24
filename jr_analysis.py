@@ -55,7 +55,7 @@ class LocalASR(io.ComfyNode):
                     "backend", display_name="转写模型", options=["Whisper small", "Paraformer zh"],
                     tooltip="Whisper small 可转写多种语言，Paraformer zh 用于普通话。",
                 ),
-                options("language", ["auto", "zh", "en"]),
+                options("language", ["auto", "zh", "en", "ja", "ko"]),
                 options("device", ["cpu", "cuda"]),
                 io.String.Input(
                     "model_path", display_name="转写模型路径", default="",
@@ -101,7 +101,7 @@ class ForcedAlignment(io.ComfyNode):
             [
                 io.Audio.Input("audio"),
                 text_input("transcript"),
-                options("language", ["auto", "zh", "en"]),
+                options("language", ["auto", "zh", "en", "ja", "ko"]),
                 options("device", ["cpu", "cuda"]),
                 io.String.Input("model_path", default=""),
                 text_input("timed_segments_json", optional=True),

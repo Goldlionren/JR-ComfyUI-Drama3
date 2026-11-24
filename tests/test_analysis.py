@@ -158,6 +158,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(mix["waveform"].shape, (1, 2, 11200))
         self.assertEqual(info["start"], 0.13)
         padded, frames = video.h3_timing(t)
+        self.assertEqual(nodes.H3Timing.execute(t)[1], frames)
         self.assertEqual((frames - 5) % 17, 0)
         self.assertGreaterEqual(padded["waveform"].shape[-1], t["waveform"].shape[-1])
         self.assertEqual(padded["waveform"].shape[1], 2)
@@ -185,10 +186,11 @@ class AnalysisTests(unittest.TestCase):
                 ]
             )
             src = LocalFileVideo(base)
-            orig = video.extract_track(src)
+            orig = nodes.ExtractAudio.execute(src)[0]
             self.assertEqual(orig["sample_rate"], 44100)
-            mixed, _ = video.premix(tone(0.4), None, 0, 0, 0)
-            fixed = video.remux(src, mixed, tmp)
+            mixed = nodes.DubMix.execute(tone(0.4), 0, 0, 0)[0]
+            with patch("folder_paths.get_temp_directory", return_value=tmp):
+                fixed = nodes.ReplaceTrack.execute(src, mixed, False, "dub")[0].get_stream_source()
 
             def frame_hash(p):
                 b = video.convert(["-i", p, "-map", "0:v:0", "-f", "framemd5", "pipe:1"])
@@ -213,40 +215,50 @@ class ExistingLocalModels(unittest.TestCase):
         ]:
             with self.subTest(direction=direction):
                 rows = [dict(start=1.0, end=4.0, text=src, speaker="A")]
-                _, _, out = video.dubbing_script(rows, translation_mode=direction)
+                result = nodes.DubbingScript.execute(json.dumps(rows), "", "", "eng_Latn", "zho_Hans", direction)
+                out = json.loads(result[2])["segments"]
                 self.assertEqual((out[0]["start"], out[0]["end"], out[0]["speaker"]), (1.0, 4.0, "A"))
                 self.assertTrue(all(s in out[0]["text"].casefold() for s in expected), out)
 
     def test_actual_bilingual_recognition_and_alignment(self):
+        from jr_benchmark_cases import FIXTURES, REFERENCES
+        filename, _, transcript, _ = REFERENCES["en"]
         samples = [
-            (asr.PARAFORMER / "example/asr_example.wav", "zh", "欢迎大家来体验达摩院推出的语音识别模型"),
-            (
-                Path(
-                    os.getenv(
-                        "JR_DRAMA3_EN_TEST_WAV", "F:/AI/IndexTTS2.5/evidence/generated/fp32/english.wav"
-                    )
-                ),
-                "en",
-                "Hello, this is a real cross-language voice cloning test.",
-            ),
+            (asr.paraformer_path() / "example/asr_example.wav", "zh", "欢迎大家来体验达摩院推出的语音识别模型"),
+            (FIXTURES / filename, "en", transcript),
         ]
         for path, lang, script in samples:
             with self.subTest(language=lang):
                 x, sr = sf.read(path, always_2d=True, dtype="float32")
                 clip = audio.as_audio(x, sr)
-                rec = asr.transcribe(clip, "Whisper small", language=lang)
-                aligned = asr.align(clip, script, language=lang)
+                heard = nodes.LocalASR.execute(clip, "Whisper small", lang, "cpu")[0]
+                transcript = nodes.TranscriptEdit.execute(script, heard)[0]
+                aligned = json.loads(nodes.ForcedAlignment.execute(clip, transcript, lang, "cpu")[0])
                 self.assertGreaterEqual(len(aligned["words"]), 3)
-                self.assertEqual(qa._tokens("".join(w["text"] for w in aligned["words"])), qa._tokens(script))
+                self.assertEqual(qa._tokens(" ".join(w["text"] for w in aligned["words"])), qa._tokens(script))
                 times = [t for w in aligned["words"] for t in (w["start"], w["end"])]
                 self.assertEqual(times, sorted(times))
                 self.assertLessEqual(times[-1], len(x) / sr)
-                quality = qa.review(clip, script, rec["text"])
+                first, last, _ = nodes.WordRegion.execute(json.dumps(aligned), 0, 0).result
+                self.assertLessEqual(first, last)
+                quality = json.loads(nodes.ReadbackCheck.execute(clip, script, heard, -46, .8, .2, 0, 1)[0])
                 self.assertLessEqual(quality["cer"], 0.20)
                 if lang == "zh":
                     p = asr.transcribe(clip, "Paraformer zh")
                     self.assertEqual(qa._tokens(p["text"]), qa._tokens(script))
-                    self.assertGreater(qa.speaker_compare(clip, clip)["cosine"], 0.999)
+                    self.assertGreater(nodes.SpeakerCheck.execute(clip, clip, "", .55)[0], .999)
+                    turns = nodes.SpeakerTurns.execute(clip, json.dumps(aligned["segments"]), "", .6)
+                    self.assertTrue(turns[1][0]["transcript"])
+
+    @unittest.skipUnless(os.getenv("JR_DRAMA3_STEMS_REAL") == "1", "requires optional BS-RoFormer")
+    def test_separation_outputs_reconstruct_mix(self):
+        source = tone(.5, 44100)
+        vocal, background = nodes.Separate.execute(source, "cpu").result
+        for track in (vocal, background):
+            self.assertEqual(track["sample_rate"], 44100)
+            self.assertTrue(torch.isfinite(track["waveform"]).all())
+        torch.testing.assert_close(vocal["waveform"] + background["waveform"],
+                                   source["waveform"].expand_as(vocal["waveform"]), atol=1e-5, rtol=0)
 
 
 if __name__ == "__main__":

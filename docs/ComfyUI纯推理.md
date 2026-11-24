@@ -34,7 +34,7 @@ cd "$REPO"
 "$PY" -m pip install -r tools/requirements-realtime.txt scipy soundfile safetensors
 ```
 
-安装后重启 ComfyUI 并刷新画布。用节点搜索找到「Drama 3 · 实时语音」，可确认插件已加载。此节点使用 GGUF 服务，工作流 01–05 使用另一套 FP8 教师。首次验证量化推理请选 07 或 08。
+安装后重启 ComfyUI 并刷新画布。搜索「Drama 3 · 实时语音」或「Drama 3 · 语音模型」。第一次验证可用 07 直接朗读，或用 01 的模型下拉框带动后续制作节点。已有工作流保留原节点 ID、连线和 FP8 默认值。
 
 <a id="model-paths"></a>
 
@@ -107,6 +107,10 @@ curl -fsS http://192.168.1.241:8195/health
 2. 切换模型时选另一个已安装的 ID，重新执行节点即可。一次常驻一个引擎，切换和朗读期间并发请求可能返回 429。旧工作流中的 `drama-3` 会沿用当前引擎。也可在客户端查询 `GET /v1/models` 的 `installed`、`active` 字段，或向 `POST /v1/models/select` 提交 `{"model":"drama-3-q4"}`。
 3. 用自己的声音时打开[08 · 实时音色与语气](../example_workflows/08-实时音色与语气.json)，连接参考录音，并填写录音中**实际说出的逐字稿**。新台词填 `text`。离线转写节点的 `model_path` 可留空，在仓库根目录执行 `python -B jr_analysis_prepare.py whisper` 准备转写权重，缺少 `whisper` 模块时在 ComfyUI 环境安装 `openai-whisper`。五语 GGUF 由实时语音节点选取。
 4. 长期复用音色可执行「保存音色版本」，复制完整 `voice_id`。用 `GET /v1/audio/voices` 验证该 ID 出现在网关的声音列表，再给 Hermes 使用。[音色保存、查询与迁移](声音资产.md)
+
+**候选、逐句和长文。** 在工作流里的「语音模型（FP8 / GGUF）」选择具体 GGUF，将原有 `teacher` 输出接到生成、候选、逐句、长文、回听重录、实时追加或固定基准节点。换模型会建立独立的候选缓存。逐句和长文的 `continuity=auto` 对 Q4 逐句复用角色参考，对五语、NVFP4 和 FP8 使用上一段历史。旧图如果已经保存 `linked`，切到 Q4 时手动改成 `auto` 或 `independent`。将模型输出接到「释放语音模型」即可卸载当前所选引擎，下次合成会重新加载。
+
+**多角色与返修。** 用 GGUF 时把台本的 `text`、`cast` 接到「本地语音生成」，模式选 `line`，每个角色可绑定一份参考音。五语和 NVFP4 的 `continue` / `revise` 接同一份权重生成的上一段 `history`。原生整场 `scene_json` 和双侧上下文局部补录仍选 FP8。各节点适用范围见[兼容性审查](节点兼容性审查.md)。
 
 ## 5. 停止、升级与验收
 

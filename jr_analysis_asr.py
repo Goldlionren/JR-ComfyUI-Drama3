@@ -17,8 +17,23 @@ ROOT = Path(__file__).resolve().parent
 WHISPER_SHA = "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794"
 AUX = ROOT / ".runtime" / "aux"
 WHISPER_SETUP = "在插件目录运行 python -B jr_analysis_prepare.py whisper，然后清空转写模型路径。"
-LOCAL_GPT = Path("F:/GPT-SoVITS-v2-240821")
-PARAFORMER = LOCAL_GPT / "tools/asr/models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+
+
+def gpt_sovits_roots():
+    configured = os.environ.get("JR_DRAMA3_GPT_SOVITS_DIR")
+    if configured:
+        return [Path(configured).expanduser()]
+    roots = [ROOT.parent / "GPT-SoVITS", Path.home() / "GPT-SoVITS"]
+    if os.name == "nt":
+        roots.append(Path("F:/GPT-SoVITS-v2-240821"))
+    return roots
+
+
+def paraformer_path(model_path=""):
+    rel = "tools/asr/models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+    return asr_path(model_path, "JR_DRAMA3_PARAFORMER_DIR",
+                    [model_root() / "asr/paraformer-zh", *(root / rel for root in gpt_sovits_roots())],
+                    directory=True)
 
 
 def source_path(value, variable, candidates, *, directory=False):
@@ -47,7 +62,7 @@ def asr_path(value, variable, candidates, *, directory=False):
     name = (str(value or "").strip() or os.environ.get(variable, "")).strip().strip('"')
     if Path(name).suffix.lower() == ".gguf":
         raise ValueError(
-            "GGUF 用于语音合成。请在「Drama 3 · 实时语音」的 model 中选择对应模型。"
+            "GGUF 用于语音合成。请在「Drama 3 · 实时语音」或「Drama 3 · 语音模型」的 model 中选择。"
             "本节点转写参考录音，请清空 model_path 自动查找，或填写 Whisper small 的 .pt 文件"
             "（Paraformer zh 填完整模型目录）。"
         )
@@ -128,17 +143,12 @@ def transcribe(audio, backend, model_path="", device="cpu", language="auto"):
         }
     if backend != "Paraformer zh":
         raise ValueError("Unknown local ASR backend")
-    path = asr_path(
-        model_path,
-        "JR_DRAMA3_PARAFORMER_DIR",
-        [model_root() / "asr/paraformer-zh", PARAFORMER],
-        directory=True,
-    )
+    path = paraformer_path(model_path)
     for name in ("model.pt", "tokens.json", "config.yaml", "am.mvn", "configuration.json"):
         if not (path / name).is_file():
             raise ValueError(f"Incomplete local Paraformer model: {name}")
-    if language == "en":
-        raise ValueError("For English use Whisper small.")
+    if language not in ("auto", "zh"):
+        raise ValueError("Paraformer zh 仅适合普通话，其他语言请选择 Whisper small。")
     from funasr import AutoModel
 
     model = AutoModel(

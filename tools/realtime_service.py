@@ -9,11 +9,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from urllib.request import Request
 
 if __package__:
-    from .local_service import STATE, local_port, read_record, service_lock, start, stop
+    from .local_service import LOCAL_HTTP, STATE, local_port, read_record, service_lock, start, stop
 else:
-    from local_service import STATE, local_port, read_record, service_lock, start, stop
+    from local_service import LOCAL_HTTP, STATE, local_port, read_record, service_lock, start, stop
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -176,6 +177,20 @@ def engine_backend(proc):
     raise RuntimeError("Unrecognized managed engine command.")
 
 
+def release_engine(backend):
+    with service_lock("realtime.lock"):
+        current = read_record("realtime-engine")
+        if not current:
+            if local_port(ENGINE_PORT):
+                raise RuntimeError("The native engine port is occupied by an unrecognized process.")
+            return
+        if engine_backend(current) != backend:
+            raise ValueError("The selected model is not the resident engine.")
+        stop("realtime-engine")
+        if local_port(ENGINE_PORT):
+            raise RuntimeError("The native engine port is still in use after unload.")
+
+
 def switch_engine(backend):
     with service_lock("realtime.lock"):
         current = read_record("realtime-engine")
@@ -210,6 +225,7 @@ def main():
     ap.add_argument("--backend", choices=MODELS, default="nvfp4")
     args = ap.parse_args()
     STATE.mkdir(exist_ok=True, parents=True)
+    reload_gateway = False
     with service_lock("realtime.lock"):
         current = read_record("realtime-engine")
         gateway = read_record("realtime")
@@ -219,6 +235,9 @@ def main():
         elif args.action == "status":
             print(f"{current.name()} PID {current.pid}" if current else "engine stopped")
             print(f"HTTP PID {gateway.pid}, port {PORT}" if gateway else "HTTP stopped")
+        elif gateway and not current:
+            # An unload leaves the gateway alive. Let it update its own selected backend.
+            reload_gateway = True
         else:
             if not gateway and local_port(PORT):
                 raise RuntimeError(f"Port {PORT} is already in use.")
@@ -247,6 +266,14 @@ def main():
                 if not current:
                     stop("realtime-engine")
                 raise
+    if reload_gateway:
+        # The gateway needs the same service lock while starting the native process.
+        request = Request(f"http://127.0.0.1:{PORT}/v1/models/select",
+                          data=json.dumps({"model": "drama-3-" + args.backend}).encode(),
+                          headers={"Content-Type": "application/json"})
+        with LOCAL_HTTP.open(request, timeout=300) as response:
+            selected = json.load(response)
+        print(f"realtime ready (port {PORT}, model {selected['id']})", flush=True)
 
 
 if __name__ == "__main__":

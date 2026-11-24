@@ -12,6 +12,9 @@ from comfy import model_management
 from comfy.utils import ProgressBar
 from .jr_teacher import MANIFEST, REVISION, FlaTeacherPath, locate_teacher, validate_teacher
 from .jr_jobs import IncompleteTakeError, cast_key, key_for, read_take, require_complete, save_take
+from .jr_gguf import QuantizedModel, render_line as render_quantized
+from .jr_realtime_client import IncompleteSpeechError, installed_model, unload_model
+from .jr_realtime_paths import PUBLIC_MODELS
 
 MODEL = io.Custom("JR_DRAMA3_TEACHER")
 HISTORY = io.Custom("JR_DRAMA3_HISTORY")
@@ -35,17 +38,21 @@ def seed_input():
 class Teacher(io.ComfyNode):
     @classmethod
     def define_schema(cls):
-        return io.Schema(node_id="JRDrama3Teacher", display_name="Drama 3 · 本地 FP8 教师",
+        return io.Schema(node_id="JRDrama3Teacher", display_name="Drama 3 · 语音模型（FP8 / GGUF）",
                          category=CATEGORY, inputs=[io.String.Input("directory", default="",
                          tooltip="空白使用已安装的新版教师。可填写本机模型目录。"),
                          io.Boolean.Input("use_fla", display_name="FLA 加速", default=False, optional=True,
                              label_on="开启", label_off="关闭",
-                             tooltip="为本教师的线性注意力启用 FLA。下次排队生效，首次开启可能需要编译。")],
+                             tooltip="仅对 FP8 教师生效。"),
+                         io.Combo.Input("model", options=["FP8", *PUBLIC_MODELS], default="FP8", optional=True,
+                             tooltip="FP8 使用上方目录。GGUF 由同机 8195 服务加载。")],
                          outputs=[MODEL.Output("teacher"),
                                   io.String.Output("revision")])
 
     @classmethod
-    def fingerprint_inputs(cls, directory="", use_fla=False):
+    def fingerprint_inputs(cls, directory="", use_fla=False, model="FP8"):
+        if model in PUBLIC_MODELS:
+            return (model, installed_model(model))
         path = locate_teacher(directory)
         stamps = []
         for name in MANIFEST["files"]:
@@ -57,7 +64,12 @@ class Teacher(io.ComfyNode):
         return (str(path), stamps, bool(list(path.glob("model-*-of-00008.safetensors"))), use_fla)
 
     @classmethod
-    def execute(cls, directory="", use_fla=False):
+    def execute(cls, directory="", use_fla=False, model="FP8"):
+        if model in PUBLIC_MODELS:
+            digest = installed_model(model)
+            return io.NodeOutput(QuantizedModel(model, digest), digest)
+        if model != "FP8":
+            raise ValueError(f"Unknown Drama 3 model: {model}")
         path = validate_teacher(locate_teacher(directory))
         return io.NodeOutput(FlaTeacherPath(path) if use_fla else str(path), REVISION)
 
@@ -110,7 +122,6 @@ def _preview_events(enabled):
 
 def render(teacher, text, seed, *, mode="line", direction="", cast=None, previous=None,
            infill=None, settings=None, live=False, on_audio_chunk=None):
-    from .jr_runtime import UnfinishedSpeechError, synthesize
     if not text.strip():
         raise ValueError("请输入台词或场景。")
     check = model_management.throw_exception_if_processing_interrupted
@@ -124,6 +135,14 @@ def render(teacher, text, seed, *, mode="line", direction="", cast=None, previou
         def stream(chunk):
             on_audio_chunk(chunk)
             playback(chunk)
+    if isinstance(teacher, QuantizedModel):
+        try:
+            return render_quantized(teacher, text, seed, mode, direction, cast, options, stream, check, previous)
+        except IncompleteSpeechError as exc:
+            raise IncompleteTakeError(str(exc)) from exc
+        finally:
+            finish()
+    from .jr_runtime import UnfinishedSpeechError, synthesize
     try:
         result = synthesize(teacher, text, _references(cast), seed, direction=direction,
                             use_fla=isinstance(teacher, FlaTeacherPath),
@@ -160,7 +179,9 @@ class Generate(io.ComfyNode):
         return io.Schema(node_id="JRDrama3Generate", display_name="Drama 3 · 本地语音生成",
                          category=CATEGORY, inputs=[
                              MODEL.Input("teacher"), io.String.Input("text", multiline=True),
-                             io.Combo.Input("mode", options=["line", "design", "scene", "continue", "revise"]),
+                             io.Combo.Input("mode", options=["line", "design", "scene", "continue", "revise"],
+                                 tooltip="line、design 支持全部模型。scene 使用 FP8 的整场提示。"
+                                         "continue、revise 可接 FP8、五语或 NVFP4 的同模型 history。"),
                              io.String.Input("direction", default="", multiline=True,
                                  tooltip="导演意见或声音描述。场景 JSON 接入 text，这里可填写附加导演意见。"),
                              seed_input(), io.Boolean.Input("live", default=False),
@@ -170,6 +191,8 @@ class Generate(io.ComfyNode):
 
     @classmethod
     def execute(cls, teacher, text, mode, direction, seed, live, cast=None, previous=None, settings=None):
+        if isinstance(teacher, QuantizedModel) and teacher.id == "drama-3-q4" and mode in ("continue", "revise"):
+            raise ValueError("Q4 无法跨请求载入声学历史。请选 line，或改用五语、NVFP4、FP8。")
         if mode in ("continue", "revise") and previous is None:
             raise ValueError("续写和返修需要连接上一版 history。")
         if mode == "design" and not direction.strip():
@@ -183,6 +206,7 @@ class Infill(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(node_id="JRDrama3Infill", display_name="Drama 3 · 上下文局部补录",
+                         description="用 FP8 的双侧上下文补录选区。此模式需要原始教师权重。",
                          category=CATEGORY, inputs=[
                              MODEL.Input("teacher"), io.Audio.Input("source"),
                              io.String.Input("revised_transcript", multiline=True,
@@ -205,8 +229,9 @@ class Infill(io.ComfyNode):
 class Unload(io.ComfyNode):
     @classmethod
     def define_schema(cls):
-        return io.Schema(node_id="JRDrama3Unload", display_name="Drama 3 · 释放教师",
-                         category=CATEGORY, is_output_node=True, inputs=[io.Audio.Input("after_audio", optional=True)],
+        return io.Schema(node_id="JRDrama3Unload", display_name="Drama 3 · 释放语音模型",
+                         category=CATEGORY, is_output_node=True, inputs=[io.Audio.Input("after_audio", optional=True),
+                         MODEL.Input("teacher", optional=True, tooltip="留空释放 FP8。连接量化模型只卸载该引擎，网关保留。")],
                          outputs=[io.String.Output("report"), io.Audio.Output("audio")])
 
     @classmethod
@@ -214,7 +239,10 @@ class Unload(io.ComfyNode):
         return float("nan")
 
     @classmethod
-    def execute(cls, after_audio=None):
+    def execute(cls, after_audio=None, teacher=None):
+        if isinstance(teacher, QuantizedModel):
+            unload_model(teacher.id)
+            return io.NodeOutput(f"已释放 {teacher.id}，下次生成时重新加载。", after_audio)
         from .jr_runtime import unload
         unload()
         return io.NodeOutput("已释放本插件的教师缓存", after_audio)
@@ -227,6 +255,8 @@ def _take_dir():
 
 
 def _cached_render(folder, identity, teacher, text, seed, cast, settings, **kwargs):
+    if isinstance(teacher, QuantizedModel):
+        identity = {**identity, "model": teacher.id, "revision": teacher.sha256}
     if isinstance(teacher, FlaTeacherPath):
         identity = {**identity, "attention_backend": "fla-0.6.0"}
     key = key_for(identity)
@@ -321,7 +351,8 @@ class Batch(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(node_id="JRDrama3Batch", display_name="Drama 3 · 逐句生成与断点续作",
                          category=CATEGORY, inputs=[MODEL.Input("teacher"), CUES.Input("cues"), seed_input(),
-                         io.Combo.Input("continuity", options=["linked", "independent"]),
+                         io.Combo.Input("continuity", options=["auto", "linked", "independent"], default="auto",
+                             tooltip="auto 对 Q4 逐句独立，对其他模型使用声学历史。"),
                          CAST.Input("cast", optional=True), SETTINGS.Input("settings", optional=True)],
                          outputs=[io.Audio.Output("clips", is_output_list=True),
                          HISTORY.Output("last_history"), io.String.Output("report")])
@@ -335,8 +366,12 @@ def render_cues(teacher, cues, seed, continuity, cast, settings):
     from .jr_script_core import SPEAKER, checked_cast, normalize_name
     if not cues:
         raise ValueError("台本中没有台词。")
+    if continuity == "auto":
+        continuity = "independent" if isinstance(teacher, QuantizedModel) and teacher.id == "drama-3-q4" else "linked"
     if continuity not in ("linked", "independent"):
         raise ValueError("请选择 linked 或 independent 连续性模式。")
+    if isinstance(teacher, QuantizedModel) and teacher.id == "drama-3-q4" and continuity == "linked":
+        raise ValueError("Q4 批量与长文请选 independent，各句复用角色参考。")
     settings = {**DEFAULTS, **(settings or {})}
     cast = checked_cast(cast)
     voice = cast_key(cast)
@@ -371,7 +406,7 @@ def render_cues(teacher, cues, seed, continuity, cast, settings):
         identity = dict(format=1, revision=REVISION, text=text, cast=voice, mode=mode,
                         settings=settings, seed=sample_seed, source=source)
         prior_key, (audio, previous, report) = _cached_render(_take_dir(), identity, teacher,
-            text, sample_seed, None if source else cast, settings, mode=mode,
+            text, sample_seed, cast if not source or isinstance(teacher, QuantizedModel) else None, settings, mode=mode,
             previous=previous if source else None)
         clips.append(audio)
         summary.append(dict(cue=cue.get("id", i+1), take=prior_key, **report))
@@ -386,16 +421,18 @@ class LongForm(io.ComfyNode):
                          io.String.Input("text", multiline=True), seed_input(),
                          io.Int.Input("max_bytes", min=32, max=4096, default=300),
                          io.Float.Input("gap_seconds", min=0, max=5, default=0, step=0.01),
-                         CAST.Input("cast", optional=True), SETTINGS.Input("settings", optional=True)],
+                         CAST.Input("cast", optional=True), SETTINGS.Input("settings", optional=True),
+                         io.Combo.Input("continuity", options=["auto", "linked", "independent"], default="auto", optional=True,
+                             tooltip="auto 对 Q4 逐段独立，对其他模型使用声学历史。")],
                          outputs=[io.Audio.Output("audio"), io.Audio.Output("clips", is_output_list=True),
                          HISTORY.Output("history"), io.String.Output("report")])
 
     @classmethod
-    def execute(cls, teacher, text, seed, max_bytes, gap_seconds, cast=None, settings=None):
+    def execute(cls, teacher, text, seed, max_bytes, gap_seconds, cast=None, settings=None, continuity="auto"):
         from .jr_script_core import chunk_script
         chunks, warnings = chunk_script(text, max_bytes)
         clips, history, report = render_cues(teacher, [{"text": s} for s in chunks],
-                                             seed, "linked", cast, settings)
+                                             seed, continuity, cast, settings)
         gap = clips[0]["waveform"].new_zeros(1, 1, round(44100 * gap_seconds))
         pieces = []
         for audio in clips:
@@ -414,7 +451,7 @@ class CheckedTake(io.ComfyNode):
                          category=CATEGORY, inputs=[MODEL.Input("teacher"), io.String.Input("text", multiline=True),
                          io.String.Input("spoken_transcript", default="", multiline=True,
                              tooltip="预期朗读的纯文本；留空则使用台词。"),
-                         io.Combo.Input("language", options=["auto", "zh", "en"]), seed_input(),
+                         io.Combo.Input("language", options=["auto", "zh", "en", "ja", "ko"]), seed_input(),
                          io.Int.Input("retry_limit", min=0, max=5, default=1),
                          io.Float.Input("max_error", min=0, max=1, default=0.2, step=0.01),
                          CAST.Input("cast", optional=True), SETTINGS.Input("settings", optional=True)],

@@ -177,10 +177,18 @@ class JRDrama3Benchmark(io.ComfyNode):
     @classmethod
     def execute(cls, teacher, case, passes, listening_notes, settings=None):
         from .jr_generate import DEFAULTS, render
-        from .jr_runtime import unload
+        from .jr_gguf import QuantizedModel
         from .jr_teacher import REVISION
+        revision = REVISION
+        if isinstance(teacher, QuantizedModel):
+            from functools import partial
+            from .jr_realtime_client import unload_model
+            unload = partial(unload_model, teacher.id, if_active=True)
+            revision = teacher.id + "@" + teacher.sha256
+        else:
+            from .jr_runtime import unload
         return io.NodeOutput(*run_suite(teacher, case, passes, listening_notes, {**DEFAULTS, **(settings or {})},
-                                        render, unload, REVISION))
+                                        render, unload, revision))
 
 
 def finalize_report(raw, review, notes, directory):

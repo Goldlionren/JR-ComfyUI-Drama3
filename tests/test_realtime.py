@@ -95,6 +95,43 @@ class RealtimeTests(unittest.TestCase):
 
 
 class SentenceGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_fingerprint_survives_receipt_replacement_until_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "five.gguf"
+            model.touch()
+            receipt = model.with_suffix(".gguf.sha256")
+            receipt.write_text("a" * 64, "ascii")
+            with patch("provider.realtime.model_file", return_value=model):
+                app = create_app("5lang", switch=lambda target: None, release=lambda target: None)
+                async with TestClient(TestServer(app)) as client:
+                    receipt.write_text("b" * 64, "ascii")
+                    name = {"model": "drama-3-5lang"}
+                    response = await client.post("/v1/models/select", json=name)
+                    self.assertEqual((await response.json())["sha256"], "a" * 64)
+                    self.assertEqual((await client.post("/v1/models/unload", json=name)).status, 200)
+                    response = await client.post("/v1/models/select", json=name)
+                    self.assertEqual((await response.json())["sha256"], "b" * 64)
+
+    async def test_native_frame_limit_cannot_commit_a_complete_take(self):
+        async def capped(request):
+            audio = base64.b64encode(bytes(16 * 2048 * 2)).decode()
+            events = [{"type": "speech.audio.delta", "audio": audio}, {"type": "speech.audio.done"}]
+            return web.Response(text="".join(f"data: {json.dumps(e)}\n\n" for e in events),
+                                content_type="text/event-stream")
+
+        native = web.Application()
+        native.router.add_post("/v1/audio/speech", capped)
+        async with TestServer(native) as engine:
+            async with TestClient(TestServer(create_app("5lang", engine_port=engine.port))) as client:
+                args = {"input": "Hello.", "sampling": {"max_frames": 16}}
+                response = await client.post("/v1/audio/speech", json={**args, "response_format": "wav"})
+                self.assertEqual(response.status, 502)
+                self.assertEqual((await response.json())["error"]["code"], "incomplete_speech")
+                response = await client.post("/v1/audio/speech", json={**args, "stream_format": "sse"})
+                data = await response.text()
+                self.assertIn("incomplete_speech", data)
+                self.assertNotIn("speech.audio.done", data)
+
     async def test_hermes_file_formats_return_decodable_audio(self):
         tone = (12000 * np.sin(2 * np.pi * 440 * np.arange(11025) / 44100)).astype("<i2")
 
@@ -126,6 +163,30 @@ class SentenceGatewayTests(unittest.IsolatedAsyncioTestCase):
                                          "response_format": fmt, "stream_format": stream})
                 self.assertEqual(resp.status, 400)
                 self.assertEqual((await resp.json())["error"]["param"], param)
+
+    async def test_unload_keeps_gateway_and_rejects_competing_switch(self):
+        entered, finish = threading.Event(), threading.Event()
+        def release(target):
+            self.assertEqual(target, "5lang")
+            entered.set()
+            finish.wait(5)
+        selected = []
+        async with TestClient(TestServer(create_app("5lang", switch=selected.append, release=release))) as client:
+            path = "/v1/models/unload"
+            for value, status in [([], 400), ("drama-3-q4", 409)]:
+                self.assertEqual((await client.post(path, json={"model": value})).status, status)
+            active = {"model": "drama-3-5lang"}
+            pending = asyncio.create_task(client.post(path, json=active))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                self.assertEqual((await client.post("/v1/models/select", json=active)).status, 429)
+            finally:
+                finish.set()
+            self.assertFalse((await (await pending).json())["active"])
+            listing = await (await client.get("/v1/models")).json()
+            self.assertFalse(any(row["active"] for row in listing["data"]))
+            self.assertTrue((await (await client.post("/v1/models/select", json=active)).json())["active"])
+            self.assertEqual(selected, ["5lang"])
 
     async def test_overlong_reference_returns_actionable_client_error(self):
         async def reject(request):

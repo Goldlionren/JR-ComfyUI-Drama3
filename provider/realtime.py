@@ -11,14 +11,14 @@ import wave
 
 import numpy as np
 import regex
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientConnectionError, ClientSession, ClientTimeout, web
 
-from jr_realtime_client import PORT, PRESET_VOICES, RATE, pcm_event
+from jr_realtime_client import IncompleteSpeechError, PORT, PRESET_VOICES, RATE, pcm_event
 from jr_realtime_paths import MODELS, PUBLIC_MODELS, engine_binary, model_file
 from jr_script_core import MARKS, SPEAKER, apply_to_spoken, chunk_script
 from .audio import encode_audio, local_ffmpeg
 from .q4_voice import load_q4_voice
-from .realtime_voices import register_voice, voice_options
+from .realtime_voices import decode_previous, previous_options, register_voice, voice_options
 from .server import LAN_INTERFACE, LAN_NETWORKS, api_boundary, default_db
 from .speech import ApiError, FORMATS, catalog
 
@@ -60,6 +60,30 @@ async def silent_pcm(rate):
     yield bytes(2 * (rate // 50))
 
 
+def native_sampling(values, backend):
+    if values is None:
+        return {}
+    limits = {"temperature": (0.05, 2), "top_p": (0.05, 1), "top_k": (0, 4097), "max_frames": (16, 8192)}
+    if not isinstance(values, dict) or values.keys() - limits.keys():
+        raise ValueError("Unsupported sampling controls.")
+    options = {}
+    for name, value in values.items():
+        low, high = limits[name]
+        if type(value) not in (int, float) or not low <= value <= high:
+            raise ValueError(f"{name} must be between {low} and {high}.")
+        if name in ("top_k", "max_frames") and type(value) is not int:
+            raise ValueError(f"{name} must be an integer.")
+        if name == "max_frames":
+            if backend == "q4":
+                # One Drama 3 codec frame is 2048 samples. Match speech.cpp's floor conversion.
+                options["max_seconds"] = value * 2048 / RATE
+            else:
+                options["max_tokens"] = value
+        else:
+            options[name] = 4097 if name == "top_k" and value == 0 else value
+    return options
+
+
 async def sdk_pcm(source):
     """Resample one continuous request, including any native sentence boundaries."""
     import soxr
@@ -75,8 +99,9 @@ async def sdk_pcm(source):
             yield tail.astype("<i2", copy=False).tobytes()
 
 
-def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, extra_networks=(), switch=None):
-    app = web.Application(middlewares=[api_boundary], client_max_size=7 * 1024 * 1024)
+def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, extra_networks=(), switch=None, release=None):
+    # Two bounded inline WAVs (speaker reference and previous take), encoded as base64.
+    app = web.Application(middlewares=[api_boundary], client_max_size=14 * 1024 * 1024)
     if lan is not None:
         app[LAN_INTERFACE] = lan
         app[LAN_NETWORKS] = (lan.network, *extra_networks)
@@ -84,6 +109,7 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
     db = voice_db if voice_db is not None else default_db()
     engine = None
     busy = False
+    loaded = True
 
     async def connection(app):
         nonlocal engine
@@ -94,10 +120,24 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
 
     app.cleanup_ctx.append(connection)
 
+    def weight_digest(selected):
+        digest = MODELS[selected][1]
+        if digest is None:
+            try:
+                digest = model_file(selected).with_suffix(".gguf.sha256").read_text("ascii").strip()
+            except (OSError, UnicodeError):
+                return None
+        return digest
+
+    # An updated receipt on disk must not relabel audio from the resident weight.
+    active_digest = weight_digest(backend)
+
     def catalog_entry(id_, selected):
-        return {"id": id_, "object": "model", "owned_by": "jr-drama3", "backend": selected,
-                "active": selected == backend,
-                "installed": selected == backend or (engine_binary(selected).is_file() and model_file(selected).is_file())}
+        active = loaded and selected == backend
+        digest = active_digest if active else weight_digest(selected)
+        return {"id": id_, "object": "model", "owned_by": "jr-drama3", "backend": selected, "sha256": digest,
+                "active": active,
+                "installed": active or (bool(digest) and engine_binary(selected).is_file() and model_file(selected).is_file())}
 
     async def models(request):
         entries = [catalog_entry(MODEL, backend)]
@@ -105,12 +145,17 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
         return web.json_response({"object": "list", "data": entries})
 
     async def health(request):
-        async with engine.get(base + "/v1/models", allow_redirects=False) as r:
-            if r.status != 200:
-                raise ApiError(503, "Local quantized engine unavailable.")
-            items = (await r.json())["data"]
-            if not any(m["id"] == MODEL for m in items):
-                raise ApiError(503, "Expected Drama 3 engine on the configured port.")
+        nonlocal loaded
+        try:
+            async with engine.get(base + "/v1/models", allow_redirects=False) as r:
+                if r.status != 200:
+                    raise ApiError(503, "Local quantized engine unavailable.")
+                items = (await r.json())["data"]
+                if not any(m["id"] == MODEL for m in items):
+                    raise ApiError(503, "Expected Drama 3 engine on the configured port.")
+        except ClientConnectionError as exc:
+            raise ApiError(503, "Quantized engine is offline. Submit speech to the managed gateway to load it.") from exc
+        loaded = True
         return web.json_response({"object": "list", "data": [catalog_entry(MODEL, backend)]})
 
     def requested_backend(body):
@@ -130,12 +175,15 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             return
 
         async def change():
-            nonlocal backend
+            nonlocal backend, loaded, active_digest
+            digest = active_digest if target == backend and loaded else weight_digest(target)
             try:
                 await asyncio.to_thread(switch, target)
             except (OSError, RuntimeError, ValueError) as exc:
                 raise ApiError(503, f"Could not load {target}: {exc}") from exc
             backend = target
+            active_digest = digest
+            loaded = True
 
         task = asyncio.create_task(change())
         try:
@@ -163,6 +211,39 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
         finally:
             busy = False
 
+    async def unload_model(request):
+        nonlocal busy, loaded
+        if release is None:
+            raise ApiError(503, "Start the managed gateway to unload a GGUF.")
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeError):
+            raise ApiError(400, "Invalid unload request.")
+        if (not isinstance(body, dict) or set(body) != {"model"} or not isinstance(body["model"], str)
+                or body["model"] not in PUBLIC_MODELS):
+            raise ApiError(400, "Supply the explicit model ID to unload.")
+        if busy:
+            raise ApiError(429, "Speech engine busy.")
+        if PUBLIC_MODELS[body["model"]] != backend:
+            raise ApiError(409, "The requested model is not currently selected.")
+        async def perform():
+            nonlocal loaded, busy
+            try:
+                await asyncio.to_thread(release, backend)
+                loaded = False
+            finally:
+                busy = False
+        busy = True
+        task = asyncio.create_task(perform())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise ApiError(503, f"Could not unload model: {exc}")
+        return web.json_response(catalog_entry(body["model"], backend))
+
     async def list_voices(request):
         presets = PRESET_VOICES if backend == "5lang" else ("zh", "en")
         rows = [{"id": key, "object": "voice", "source": "preset"} for key in presets]
@@ -177,7 +258,7 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             raise ApiError(400, str(exc)) from exc
         return web.json_response(entry)
 
-    async def chunks(texts, voice, seed):
+    async def chunks(texts, voice, seed, sampling):
         if backend == "q4" and "voice_ref" in voice:
             voice = {"voice": await load_q4_voice(engine, base, voice["voice_ref"], voice["reference_text"])}
         for i, text in enumerate(texts):
@@ -192,8 +273,9 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             if backend != "q4":
                 # Keep each validated sentence intact. The engine's default
                 # 128-codepoint split can otherwise create an unchecked tail.
-                data["options"] = {"seed": part_seed, "text_chunk_size": max(300, len(text))}
+                data["options"] = {**sampling, "seed": part_seed, "text_chunk_size": max(300, len(text))}
             else:
+                data.update(sampling)
                 data["seed"] = part_seed
             async with engine.post(base + "/v1/audio/speech", json=data, allow_redirects=False) as r:
                 if r.status != 200:
@@ -215,6 +297,10 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
                         raise ApiError(502, message[:1024] or "Native speech generation failed.")
                     pcm = pcm_event(event, count)
                     if pcm is None:
+                        # audio.cpp's speech SSE omits the task's reached_limit flag.
+                        # At the cap the transport alone cannot certify a complete production take.
+                        if "max_tokens" in sampling and count >= sampling["max_tokens"] * 2048:
+                            raise IncompleteSpeechError("音频达到 max_frames，无法确认完整结束。请缩短台词或提高上限。")
                         break
                     count += len(pcm) // 2
                     yield pcm
@@ -231,7 +317,7 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             raise ApiError(400, "Expected a drama-3 speech request.")
         target = requested_backend(body)
         if set(body) - {"model", "input", "seed", "voice", "response_format", "stream_format",
-                        "instructions", "voice_ref", "reference_text"}:
+                        "instructions", "voice_ref", "reference_text", "sampling", "previous_take"}:
             raise ApiError(400, "Unsupported realtime speech option.")
         text = body.get("input")
         if not isinstance(text, str) or len(text) > 4096:
@@ -247,6 +333,8 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             raise ApiError(400, f"Unsupported stream_format {str(stream)[:64]!r} for {fmt}. "
                            "Use audio for files or sse with pcm.", param="stream_format")
         try:
+            sampling = native_sampling(body.get("sampling"), target)
+            previous = decode_previous(body.get("previous_take"), target)
             instructions = body.get("instructions", "")
             texts = directed_chunks(text, instructions)
             if texts:
@@ -263,7 +351,12 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             if busy:
                 raise ApiError(429, "Speech engine busy.")
             busy = True
-            source = chunks(texts, options, seed)
+            async def generate():
+                with previous_options(previous) as history:
+                    async with aclosing(chunks(texts, options, seed, {**sampling, **history})) as sequence:
+                        async for pcm in sequence:
+                            yield pcm
+            source = generate()
             if binary_pcm:
                 source = sdk_pcm(source)
         else:
@@ -306,6 +399,15 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
                 await result.write(b"data: " + json.dumps(done).encode() + b"\n\n")
             await result.write_eof()
             return result
+        except IncompleteSpeechError as exc:
+            if result is not None and stream == "sse":
+                error = {"type": "error", "code": "incomplete_speech", "message": str(exc)}
+                await result.write(b"data: " + json.dumps(error).encode() + b"\n\n")
+                await result.write_eof()
+                return result
+            if result is not None and result.prepared and request.transport:
+                request.transport.close()
+            raise ApiError(502, str(exc), code="incomplete_speech") from exc
         except (Exception, asyncio.CancelledError):
             if result is not None and result.prepared and request.transport:
                 request.transport.close()  # Signal truncation to raw-PCM clients as well as SSE clients.
@@ -318,6 +420,7 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
     app.router.add_get("/", models)
     app.router.add_get("/v1/models", models)
     app.router.add_post("/v1/models/select", select_model)
+    app.router.add_post("/v1/models/unload", unload_model)
     app.router.add_get("/health", health)
     app.router.add_get("/v1/audio/voices", list_voices)
     app.router.add_post("/v1/audio/voices", save_voice)
@@ -327,8 +430,8 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
-    from tools.realtime_service import switch_engine
+    from tools.realtime_service import release_engine, switch_engine
     ap.add_argument("--backend", required=True, choices=MODELS)
     args = ap.parse_args()
-    web.run_app(create_app(args.backend, switch=switch_engine),
+    web.run_app(create_app(args.backend, switch=switch_engine, release=release_engine),
                 host="0.0.0.0", port=PORT, handler_cancellation=True)

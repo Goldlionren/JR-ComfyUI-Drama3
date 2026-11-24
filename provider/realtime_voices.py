@@ -1,8 +1,12 @@
 """Adapt versioned ComfyUI voices and inline WAV references to the quantized engine."""
 
 import base64
+from contextlib import contextmanager
 import io
+import json
+from pathlib import Path
 import struct
+from tempfile import TemporaryDirectory
 import wave
 
 import numpy as np
@@ -37,6 +41,31 @@ def decode_reference(ref):
     except (wave.Error, EOFError, struct.error) as exc:
         raise ValueError("Invalid reference WAV.") from exc
     return pcm, channels, rate
+
+
+def decode_previous(previous, backend):
+    if previous is None:
+        return None
+    if backend == "q4":
+        raise ValueError("Q4 does not accept acoustic history across requests.")
+    if not isinstance(previous, dict) or previous.keys() != {"text", "wav"}:
+        raise ValueError("previous_take requires text and inline PCM16 WAV.")
+    return reference_text(previous["text"]), decode_reference(previous["wav"])
+
+
+@contextmanager
+def previous_options(take):
+    if take is None:
+        yield {}
+        return
+    text, (pcm, channels, rate) = take
+    # Only pass a server-created file to the native engine. Never accept a client path.
+    with TemporaryDirectory(prefix="jr-drama3-history-") as directory:
+        path = Path(directory) / "previous.wav"
+        with wave.open(str(path), "wb") as out:
+            out.setparams((channels, 2, rate, 0, "NONE", ""))
+            out.writeframes(pcm)
+        yield {"previous_takes": json.dumps([{"text": text, "audio_path": str(path)}], ensure_ascii=False)}
 
 
 def register_voice(db, body):
@@ -77,6 +106,8 @@ def saved_options(db, version):
 
 def voice_options(body, backend, db=None):
     voice = body.get("voice", "zh")
+    if voice == "none" and "voice_ref" not in body and not body.get("reference_text"):
+        return {"voice": "none"} if backend == "q4" else {}
     if is_saved_voice(voice):
         if "voice_ref" in body or "reference_text" in body:
             raise ValueError("A saved voice ID already supplies its reference recording and transcript.")
