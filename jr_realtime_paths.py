@@ -9,7 +9,9 @@ MODELS = {
         "Drama3-V2-78e5ab7-NVFP4-256E.gguf",
         "5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1",
     ),
+    "5lang": ("Drama3-Tier2-5Lang.gguf", None),
 }
+PUBLIC_MODELS = {"drama-3-" + backend: backend for backend in MODELS}
 
 
 def engine_binary(backend):

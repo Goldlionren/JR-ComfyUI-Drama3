@@ -21,7 +21,7 @@ def main():
                          timeout=args.timeout, max_concurrent=args.max_concurrent, ffmpeg=args.ffmpeg)
     except ValueError as exc:
         parser.error(str(exc))
-    web.run_app(app, host="127.0.0.1", port=args.port, handler_cancellation=True)
+    web.run_app(app, host="0.0.0.0", port=args.port, handler_cancellation=True)
 
 
 if __name__ == "__main__":

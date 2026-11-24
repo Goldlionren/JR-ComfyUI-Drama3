@@ -2,6 +2,7 @@
 # ruff: noqa: E402 -- also support starting directly from the tools directory.
 
 import argparse
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -9,11 +10,14 @@ from pathlib import Path
 import subprocess
 import sys
 
-from local_service import STATE, local_port, read_record, service_lock, start, stop
+if __package__:
+    from .local_service import STATE, local_port, read_record, service_lock, start, stop
+else:
+    from local_service import STATE, local_port, read_record, service_lock, start, stop
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from jr_benchmark_cases import FIXTURES, REFERENCES
+from jr_benchmark_cases import FIVE_LANG_FIXTURES, FIVE_LANG_REFERENCES, FIXTURES, REFERENCES
 from jr_realtime_client import stream_speech
 from jr_realtime_paths import MODELS, engine_binary, model_file
 from jr_realtime_paths import RUNTIME as RUNTIME
@@ -22,23 +26,59 @@ PORT = 8195
 ENGINE_PORT = 8196
 
 
-def verify(path, expected):
+@lru_cache(maxsize=32)
+def _verify(path, expected, size, mtime):
     with path.open("rb") as f:
         if hashlib.file_digest(f, "sha256").hexdigest() != expected:
             raise ValueError(f"SHA-256 mismatch: {path}")
 
 
-def command(backend):
+def verify(path, expected):
+    stat = path.stat()
+    _verify(path, expected, stat.st_size, stat.st_mtime_ns)
+
+
+def five_lang_options():
+    # Bound the total even on larger development cards. Account for other desktop workloads.
+    result = subprocess.check_output(
+        ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], text=True)
+    free_mib = min(int(s.strip()) for s in result.splitlines() if s.strip())
+    budget = int(os.environ.get("JR_DRAMA3_VRAM_GIB", "12"))
+    if budget not in (12, 16):
+        raise ValueError("JR_DRAMA3_VRAM_GIB must be 12 or 16")
+    available = min(free_mib, budget * 1024)
+    options = {"fish_drama3.tower_prefill_cache_mb": 64, "fish_drama3.backbone_prefill_cache_mb": 64,
+               "fish_drama3.codec_encoder_chunk_samples": 65536}
+    if budget == 16 and available >= 15400:
+        return {**options, "fish_drama3.disk_experts": False}
+    # 40 layers * three 2048 x 512 projections * 110 bytes per 256 weights.
+    slots = min(100 if budget == 12 else 160, (available - 6500) // 52)
+    if slots < 8:
+        raise ValueError("Too little free NVIDIA memory for the five-language model.")
+    return {**options, "fish_drama3.disk_experts": True, "fish_drama3.expert_cache_size": slots,
+            "fish_drama3.pin_experts": True}
+
+
+def verified_model(backend):
     model = model_file(backend)
     digest = MODELS[backend][1]
+    if digest is None:
+        digest = model.with_suffix(".gguf.sha256").read_text("ascii").strip()
     verify(model, digest)
+    return model, digest
+
+
+def command(backend):
+    model, digest = verified_model(backend)
     refs = {}
-    for key, (wav, sha, transcript, _) in REFERENCES.items():
-        verify(FIXTURES / wav, sha)
-        refs[key] = {"voice_ref": str(FIXTURES / wav), "reference_text": transcript}
-    if backend == "nvfp4":
+    presets = REFERENCES | FIVE_LANG_REFERENCES if backend == "5lang" else REFERENCES
+    for key, (name, sha, transcript, _) in presets.items():
+        wav = (FIVE_LANG_FIXTURES if key in FIVE_LANG_REFERENCES else FIXTURES) / name
+        verify(wav, sha)
+        refs[key] = {"voice_ref": str(wav), "reference_text": transcript}
+    if backend != "q4":
         exe = engine_binary(backend)
-        config = STATE / "realtime-nvfp4.json"
+        config = STATE / f"realtime-{backend}.json"
         config.write_text(
             json.dumps(
                 {
@@ -60,6 +100,7 @@ def command(backend):
                                 "fish_drama3.disk_experts": False,
                                 "fish_drama3.perf_mode": "cuda_perf",
                                 "fish_drama3.context_length": 2048,
+                                **(five_lang_options() if backend == "5lang" else {}),
                             },
                             "default_request_options": {
                                 "max_tokens": 920,
@@ -123,6 +164,46 @@ def command(backend):
     return args
 
 
+def engine_backend(proc):
+    if proc is None:
+        return None
+    args = proc.cmdline()
+    for backend in ("nvfp4", "5lang"):
+        if args[-1] == str(STATE / f"realtime-{backend}.json"):
+            return backend
+    if "serve" in args and Path(args[0]) == engine_binary("q4"):
+        return "q4"
+    raise RuntimeError("Unrecognized managed engine command.")
+
+
+def switch_engine(backend):
+    with service_lock("realtime.lock"):
+        current = read_record("realtime-engine")
+        if engine_backend(current) == backend:
+            return
+        if not current and local_port(ENGINE_PORT):
+            raise RuntimeError("The native engine port is in use by another process.")
+        # Prepare and verify the requested package before releasing the current engine.
+        verified_model(backend)
+        if not engine_binary(backend).is_file():
+            raise FileNotFoundError(engine_binary(backend))
+        args = None if backend == "5lang" else command(backend)
+        previous = current.cmdline() if current else None
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+        if current:
+            stop("realtime-engine")
+        try:
+            # Read the free-memory budget after unloading the old engine.
+            if args is None:
+                args = command(backend)
+            start("realtime-engine", args, env, ENGINE_PORT, "/v1/models")
+        except Exception:
+            stop("realtime-engine")
+            if previous:
+                start("realtime-engine", previous, env, ENGINE_PORT, "/v1/models")
+            raise
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("action", choices=("start", "stop", "status"))
@@ -141,11 +222,8 @@ def main():
         else:
             if not gateway and local_port(PORT):
                 raise RuntimeError(f"Port {PORT} is already in use.")
-            expected = engine_binary(args.backend)
-            if (current and Path(current.cmdline()[0]) != expected) or (
-                gateway and gateway.cmdline()[-1] != args.backend
-            ):
-                raise ValueError("A different realtime engine is running. Stop it before switching.")
+            if current and engine_backend(current) != args.backend:
+                raise ValueError("Select the model in the node or POST /v1/models/select to switch.")
             if not current and local_port(ENGINE_PORT):
                 raise RuntimeError(f"Port {ENGINE_PORT} is already in use.")
             env = dict(os.environ, PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")

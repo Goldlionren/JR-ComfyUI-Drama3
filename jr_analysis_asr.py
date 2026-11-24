@@ -16,6 +16,7 @@ from .jr_delivery_audio import resample, samples
 ROOT = Path(__file__).resolve().parent
 WHISPER_SHA = "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794"
 AUX = ROOT / ".runtime" / "aux"
+WHISPER_SETUP = "在插件目录运行 python -B jr_analysis_prepare.py whisper，然后清空转写模型路径。"
 LOCAL_GPT = Path("F:/GPT-SoVITS-v2-240821")
 PARAFORMER = LOCAL_GPT / "tools/asr/models/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
 
@@ -42,6 +43,22 @@ def model_root():
         return AUX
 
 
+def asr_path(value, variable, candidates, *, directory=False):
+    name = (str(value or "").strip() or os.environ.get(variable, "")).strip().strip('"')
+    if Path(name).suffix.lower() == ".gguf":
+        raise ValueError(
+            "GGUF 用于语音合成。请在「Drama 3 · 实时语音」的 model 中选择对应模型。"
+            "本节点转写参考录音，请清空 model_path 自动查找，或填写 Whisper small 的 .pt 文件"
+            "（Paraformer zh 填完整模型目录）。"
+        )
+    try:
+        return source_path(name, variable, candidates, directory=directory)
+    except FileNotFoundError:
+        checked = name or "、".join(map(str, candidates))
+        hint = "请填写完整的 Paraformer zh 模型目录。" if directory else WHISPER_SETUP
+        raise FileNotFoundError(f"找不到转写模型，已检查 {checked}。{hint}") from None
+
+
 def mono16(audio):
     x, rate = samples(audio)
     return np.ascontiguousarray(resample(x.mean(axis=1), rate, 16000), dtype=np.float32)
@@ -54,9 +71,7 @@ def _digest(filename, size, mtime):
 
 
 def whisper_model(model_path, device):
-    import whisper
-
-    path = source_path(
+    path = asr_path(
         model_path,
         "JR_DRAMA3_WHISPER_PATH",
         [
@@ -66,10 +81,14 @@ def whisper_model(model_path, device):
         ],
     )
     stat = path.stat()
-    if _digest(str(path), stat.st_size, stat.st_mtime_ns) != WHISPER_SHA:
+    checksum = _digest(str(path), stat.st_size, stat.st_mtime_ns)
+    if checksum != WHISPER_SHA:
         raise ValueError(
-            "This node requires the official multilingual Whisper small checkpoint, SHA256 " + WHISPER_SHA
+            f"Whisper small 权重校验失败：{path}。实际 SHA256 {checksum}，"
+            f"官方多语种 small.pt 应为 {WHISPER_SHA}。{WHISPER_SETUP}"
         )
+    import whisper
+
     # A full existing file path bypasses Whisper's named-model downloader.
     model = whisper.load_model(str(path), device=device).eval()
     model.set_alignment_heads(whisper._ALIGNMENT_HEADS["small"])
@@ -109,9 +128,7 @@ def transcribe(audio, backend, model_path="", device="cpu", language="auto"):
         }
     if backend != "Paraformer zh":
         raise ValueError("Unknown local ASR backend")
-    from funasr import AutoModel
-
-    path = source_path(
+    path = asr_path(
         model_path,
         "JR_DRAMA3_PARAFORMER_DIR",
         [model_root() / "asr/paraformer-zh", PARAFORMER],
@@ -122,6 +139,8 @@ def transcribe(audio, backend, model_path="", device="cpu", language="auto"):
             raise ValueError(f"Incomplete local Paraformer model: {name}")
     if language == "en":
         raise ValueError("For English use Whisper small.")
+    from funasr import AutoModel
+
     model = AutoModel(
         model=str(path),
         device=device,

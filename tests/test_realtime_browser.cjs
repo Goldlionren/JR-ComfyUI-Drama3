@@ -13,14 +13,20 @@ async function main() {
         const workflow = JSON.parse(fs.readFileSync(workflowFile, "utf8"));
         await page.goto(origin);
         await page.waitForFunction(() => window.LiteGraph?.registered_node_types?.JRDrama3Realtime);
-        const job = await page.evaluate(async graph => {
+        const job = await page.evaluate(async ({graph, model}) => {
             const {app} = await import("/scripts/app.js");
             const {api} = await import("/scripts/api.js");
             await app.loadGraphData(graph);
             const node = app.graph._nodes.find(n => n.type === "JRDrama3Realtime");
+            if (model) {
+                const selector = node.widgets.find(w => w.name === "model");
+                if (!selector?.options.values.includes(model)) throw Error("Missing model choice: " + model);
+                selector.value = model;
+            }
             await node.widgets.find(w => w.name === "启用本机流式试听").callback();
             const {output} = await app.graphToPrompt();
             const inputs = output[node.id].inputs;
+            if (model && inputs.model !== model) throw Error("Selected model missing from queued prompt");
             if (inputs.seed !== 37003 || !inputs.live) throw Error("Workflow widget mismatch");
             if (graph.nodes.some(n => n.type === "LoadAudio") &&
                 (!inputs.reference_audio || !inputs.reference_text || inputs.instructions !== "whisper")) {
@@ -40,7 +46,7 @@ async function main() {
                 body:JSON.stringify({prompt:output,client_id:api.clientId})});
             if (!res.ok) throw Error(await res.text());
             return (await res.json()).prompt_id;
-        }, workflow);
+        }, {graph:workflow, model:process.env.JR_TEST_MODEL});
         await page.waitForFunction(() => window.playback?.ended, null, {timeout:120000});
         const packets = await page.evaluate(() => window.playback.schedules);
         assert.ok(packets.length > 1 && packets.every(p => p.rate === 44100 && p.state === "running"));

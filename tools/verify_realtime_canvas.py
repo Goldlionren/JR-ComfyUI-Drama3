@@ -15,13 +15,13 @@ import numpy as np
 import soundfile as sf
 
 
-async def verify(port, output):
+async def verify(port, output, model="drama-3"):
     root = Path(__file__).resolve().parents[1]
     workflow = json.loads((root / "example_workflows/07-中英实时语音.json").read_text("utf-8"))
     (node,) = workflow["nodes"]
     text, voice, seed, _, live = node["widgets_values"]
     graph = {
-        "1": {"class_type": node["type"], "inputs": dict(text=text, voice=voice, seed=seed, live=live)},
+        "1": {"class_type": node["type"], "inputs": dict(text=text, voice=voice, seed=seed, live=live, model=model)},
         "2": {"class_type": "PreviewAny", "inputs": {"source": ["1", 1]}},
     }
     base = f"http://127.0.0.1:{port}"
@@ -84,6 +84,7 @@ async def verify(port, output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8188)
+    parser.add_argument("--model", default="drama-3")
     parser.add_argument("--output", type=Path, default=Path("outputs/realtime-validation/canvas.json"))
     args = parser.parse_args()
-    asyncio.run(verify(args.port, args.output))
+    asyncio.run(verify(args.port, args.output, args.model))

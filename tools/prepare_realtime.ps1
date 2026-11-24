@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet('q4', 'nvfp4')] [string]$Backend = 'nvfp4',
+param([ValidateSet('q4', 'nvfp4', '5lang')] [string]$Backend = 'nvfp4',
       [string]$VsInstall = '')
 $ErrorActionPreference = 'Stop'
 $runtime = Join-Path (Split-Path $PSScriptRoot -Parent) '.runtime'
@@ -37,7 +37,9 @@ if ($Backend -eq 'q4') {
 
 $name = 'Drama3-V2-78e5ab7-NVFP4-256E.gguf'
 $repo = 'https://huggingface.co/WonderChord/Drama3-V2-NVFP4-256E-GGUF/resolve/06cfd87d3aa87cdd37e816fac6da485b8f6cbdb4'
-$null = Get-CheckedFile "$repo/$name" $name '5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1' $modelPath
+if ($Backend -eq 'nvfp4') {
+    $null = Get-CheckedFile "$repo/$name" $name '5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1' $modelPath
+}
 $patch = Get-CheckedFile "$repo/drama3-nvfp4-audiocpp.patch" 'drama3-nvfp4-audiocpp.patch' 'bbb0742a2beb7c06a7592efaa5dca74f8bb1ba3f25da57ca9d882b874f082c09'
 $src = Join-Path $runtime 'audio.cpp'
 $commit = '066ea9862f41f4d7bcf996d5f00e464d8d28ace5'
@@ -55,7 +57,14 @@ if ($LASTEXITCODE) {
     & git -C $src apply $patch
     if ($LASTEXITCODE) { throw 'NVFP4 patch failed' }
 }
-$params = @{Preset='windows-cuda-release'; ModelSet='custom'; Models='fish_drama3'; Target='audiocpp_server'; Jobs=12; CudaArchitectures='120a'}
+$params = @{Preset='windows-cuda-release'; ModelSet='custom'; Models='fish_drama3'; Target='audiocpp_server'; Jobs=8; CudaArchitectures='86-real;89-real;120a-real'; CpuArch='avx2'}
 if ($VsInstall) { $params.VsInstall = $VsInstall }
 & (Join-Path $src 'scripts/build_windows.ps1') @params
 if ($LASTEXITCODE) { throw 'CUDA build failed' }
+if ($Backend -eq '5lang') {
+    $destination = if ($modelPath) { $modelPath } else { Join-Path $runtime 'Drama3-Tier2-5Lang.gguf' }
+    if (-not ((Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath "$destination.sha256"))) {
+        & python -B (Join-Path $PSScriptRoot 'prepare_five_lang.py') --download --output $destination
+        if ($LASTEXITCODE) { throw 'Five-language conversion failed' }
+    }
+}

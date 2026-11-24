@@ -6,15 +6,27 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 import sys
+import threading
 import time
 import wave
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from jr_benchmark_cases import CASES, FIXTURES, REFERENCES
+from jr_benchmark_cases import CASES, FIVE_LANG_FIXTURES, FIVE_LANG_REFERENCES, FIXTURES, REFERENCES
 from jr_realtime_client import PORT, RATE, stream_speech
+from jr_realtime_paths import PUBLIC_MODELS
+
+FIVE_LANG = {
+    "zh": ("请把桌上的蓝色文件夹交给我。", "等雨停了，我们就从后门出去。", "妈妈把热牛奶放在窗边，提醒我早点睡觉。"),
+    "en": ("Please leave the blue folder on the table.", "When the rain stops, we can leave through the back door.",
+           "My sister called to say the last train had already left."),
+    "ja": ("明日の朝、駅で待ち合わせしましょう。", "雨が止んだら、一緒に家へ帰りましょう。", "窓を開けて、新鮮な空気を入れてください。"),
+    "ko": ("내일 아침에 기차역에서 만나요.", "비가 그치면 같이 집에 가요.", "오늘은 날씨가 좋아서 공원에 갔어요."),
+    "yue": ("唔該你聽朝喺車站等我，我哋一齊搭車。", "落緊雨呀，記得帶把遮出街。", "你幫我閂埋道門，我陣間就返嚟。"),
+}
 
 LONG = (
     {
@@ -61,11 +73,11 @@ def save(path, data):
     tmp.replace(path)
 
 
-def measure(case, seed, path, port):
+def measure(case, seed, path, port, model="drama-3"):
     pcm = bytearray()
     arrivals = []
     started = time.perf_counter()
-    for chunk in stream_speech(case["target"], case["reference"], seed, port=port):
+    for chunk in stream_speech(case["target"], case["reference"], seed, port=port, model=model):
         at = time.perf_counter() - started
         pcm.extend(chunk)
         arrivals.append((at, len(pcm) / (2 * RATE)))
@@ -104,7 +116,7 @@ def p95(values):
 
 def summarize(runs):
     summary = {}
-    for lang in ("zh", "en", "mixed"):
+    for lang in sorted({row["id"].split("-")[0] for row in runs}):
         group = [r for r in runs if r["id"].split("-")[0] == lang]
         if not group:
             continue
@@ -127,6 +139,7 @@ def run(args):
     gpu = pynvml.nvmlDeviceGetHandleByIndex(0)
     data = {
         "rate": RATE,
+        "model": args.model,
         "repeats": args.repeats,
         "runs": [],
         "gpu": pynvml.nvmlDeviceGetName(gpu),
@@ -136,12 +149,38 @@ def run(args):
         "VRAM is whole-device usage sampled immediately after each warm take.",
     }
     # Warm the reference and GPU paths. Keep these timings visible but outside warm statistics.
-    data["warmup"] = [measure(c, c["seed"], args.output / f"warmup-{c['id']}.wav", args.port) for c in CASES]
+    if args.five_languages:
+        data["protocol"] += " Whole-device peak includes warmup and is sampled every 75 ms."
+        stop = threading.Event()
+        peak = pynvml.nvmlDeviceGetMemoryInfo(gpu).used
+        def monitor():
+            nonlocal peak
+            while not stop.wait(0.075):
+                peak = max(peak, pynvml.nvmlDeviceGetMemoryInfo(gpu).used)
+        watcher = threading.Thread(target=monitor, daemon=True)
+        watcher.start()
+    try:
+        return run_cases(args, data, gpu, pynvml)
+    finally:
+        if args.five_languages:
+            stop.set()
+            watcher.join()
+            data["device_peak_gib"] = peak / 2**30
+            save(args.output / "timings.json", data)
+        pynvml.nvmlShutdown()
+
+
+def run_cases(args, data, gpu, pynvml):
+    data["warmup"] = [measure(c, c["seed"], args.output / f"warmup-{c['id']}.wav", args.port, args.model)
+                      for c in CASES]
     cases = [SUSTAINED] if args.sustained else (*CASES, *LONG)
+    if args.five_languages:
+        cases = [dict(id=f"{lang}-{n}", reference=lang, seed=42, target=lines[n])
+                 for n in range(3) for lang, lines in FIVE_LANG.items()]
     for i in range(args.repeats):
         for case in cases:
             path = args.output / f"{case['id']}-{i + 1}.wav"
-            row = measure(case, case["seed"] + i * 100, path, args.port)
+            row = measure(case, case["seed"] + i * 100, path, args.port, args.model)
             row["device_used_gib_after"] = pynvml.nvmlDeviceGetMemoryInfo(gpu).used / 2**30
             data["runs"].append(row)
             save(args.output / "timings.json", data)
@@ -152,11 +191,10 @@ def run(args):
         for s in data["summary"].values()
     )
     save(args.output / "timings.json", data)
-    pynvml.nvmlShutdown()
     return data["timing_pass"]
 
 
-def review(out, speaker_path, by_sentence=False, port=PORT):
+def review(out, speaker_path, by_sentence=False, port=PORT, sensevoice_path=None):
     import importlib
     from types import ModuleType
     import numpy as np
@@ -169,11 +207,22 @@ def review(out, speaker_path, by_sentence=False, port=PORT):
     asr = importlib.import_module("realtime_review.jr_analysis_asr")
     quality = importlib.import_module("realtime_review.jr_analysis_quality")
     torch.set_num_threads(6)
-    model = asr.whisper_model("", "cpu")
+    sensevoice = None
+    if sensevoice_path:
+        from funasr import AutoModel
+        sensevoice = AutoModel(model=str(sensevoice_path.resolve(strict=True)), device="cpu", ncpu=4,
+                              trust_remote_code=False, disable_update=True, check_latest=False, disable_pbar=True)
+    else:
+        model = asr.whisper_model("", "cpu")
     speaker = quality.speaker_model(speaker_path)
+    data = json.loads((out / "timings.json").read_text("utf-8"))
+    used_references = {row["reference"] for row in data["runs"]}
     references = {}
-    for key, (filename, _, _, _) in REFERENCES.items():
-        with wave.open(str(FIXTURES / filename), "rb") as wav:
+    for key, (filename, _, _, _) in (REFERENCES | FIVE_LANG_REFERENCES).items():
+        if key not in used_references:
+            continue
+        folder = FIVE_LANG_FIXTURES if key in FIVE_LANG_REFERENCES else FIXTURES
+        with wave.open(str(folder / filename), "rb") as wav:
             samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype("float32") / 32768
             reference = {
                 "waveform": torch.from_numpy(samples.reshape(-1, wav.getnchannels()).T)[None],
@@ -185,7 +234,6 @@ def review(out, speaker_path, by_sentence=False, port=PORT):
     normalize_en = EnglishTextNormalizer()
     fold = quality.chinese_folder()[1]
     rows = []
-    data = json.loads((out / "timings.json").read_text("utf-8"))
     for row in data["runs"]:
         with wave.open(str(out / row["file"])) as w:
             pcm = w.readframes(w.getnframes())
@@ -201,16 +249,23 @@ def review(out, speaker_path, by_sentence=False, port=PORT):
         mono = asr.mono16(audio)
         cosine = float(torch.dot(quality.speaker_embedding(speaker, mono), references[row["reference"]]))
         segments = []
-        if by_sentence:
+        detected = None
+        if sensevoice:
+            tagged = sensevoice.generate(input=mono, cache={}, language="auto", use_itn=True)[0]["text"]
+            language_tag = re.match(r"<\|(zh|en|ja|ko|yue)\|>", tagged)
+            detected = language_tag.group(1) if language_tag else None
+            transcript = re.sub(r"<\|[^|]*\|>", "", tagged).strip()
+        elif by_sentence:
             offset = 0
             for i, text in enumerate(chunk_script(row["target"], 300)[0]):
-                take = b"".join(stream_speech(text, row["reference"], (row["seed"] + i) % 2**32, port=port))
+                take = b"".join(stream_speech(text, row["reference"], (row["seed"] + i) % 2**32, port=port,
+                                              model=data.get("model", "drama-3")))
                 if pcm[offset : offset + len(take)] != take:
                     raise ValueError("Cannot verify sentence boundaries against the original PCM.")
                 start = round(offset / 2 * 16000 / RATE)
                 offset += len(take)
                 end = round(offset / 2 * 16000 / RATE)
-                language = "zh" if any("\u3400" <= c <= "\u9fff" for c in text) else "en"
+                language = lang if lang in ("ja", "ko") else ("zh" if any("\u3400" <= c <= "\u9fff" for c in text) else "en")
                 heard = model.transcribe(
                     mono[start:end], language=language, fp16=False, temperature=0, verbose=None
                 )["text"].strip()
@@ -220,7 +275,7 @@ def review(out, speaker_path, by_sentence=False, port=PORT):
             transcript = " ".join(s["heard"] for s in segments)
         else:
             transcript = model.transcribe(
-                mono, language="en" if lang == "en" else "zh", fp16=False, temperature=0, verbose=None
+                mono, language=lang if lang in ("en", "ja", "ko") else "zh", fp16=False, temperature=0, verbose=None
             )["text"].strip()
 
         # The corpus contains two Chinese numeric expressions with unambiguous readings.
@@ -243,6 +298,7 @@ def review(out, speaker_path, by_sentence=False, port=PORT):
                 "error": edits / len(wanted),
                 "tail_matches": wanted[-2:] == got[-2:],
                 "speaker_cosine": cosine,
+                **({"detected_language": detected} if sensevoice else {}),
                 **({"verified_sentence_boundaries": segments} if by_sentence else {}),
             }
         )
@@ -258,7 +314,7 @@ def review(out, speaker_path, by_sentence=False, port=PORT):
     save(
         out / ("asr-by-sentence.json" if by_sentence else "asr.json"),
         {
-            "recognizer": "local multilingual Whisper small, CPU greedy; "
+            "recognizer": "SenseVoiceSmall CPU, automatic language detection" if sensevoice else "local multilingual Whisper small, CPU greedy; "
             + (
                 "language by sentence, boundaries matched byte-for-byte to recorded PCM"
                 if by_sentence
@@ -276,6 +332,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--model", choices=["drama-3", *PUBLIC_MODELS], default="drama-3")
+    parser.add_argument("--five-languages", action="store_true", help="Benchmark fifteen Mandarin, English, Japanese, Korean and Cantonese lines.")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--sustained", action="store_true", help="Exercise a continuous bilingual passage.")
     parser.add_argument("--review", action="store_true")
@@ -285,11 +343,14 @@ if __name__ == "__main__":
         help="Reproduce each sentence to locate exact boundaries in the saved audio, then run ASR.",
     )
     parser.add_argument("--speaker-model", default="", help="Local CAMPPlus checkpoint for the audio review.")
+    parser.add_argument("--sensevoice", type=Path, help="Local SenseVoiceSmall checkpoint for five-language review.")
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("repeats must be positive")
     if args.review or args.review_by_sentence:
-        passed = review(args.output, args.speaker_model, args.review_by_sentence, args.port)
+        if args.review_by_sentence and args.sensevoice:
+            parser.error("Use --review with --sensevoice for whole-take language identification.")
+        passed = review(args.output, args.speaker_model, args.review_by_sentence, args.port, args.sensevoice)
     else:
         passed = run(args)
     sys.exit(0 if passed else 1)

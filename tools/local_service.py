@@ -76,7 +76,7 @@ def start(name, args, env, port, ready_path):
         try:
             with LOCAL_HTTP.open(f"http://127.0.0.1:{port}{ready_path}", timeout=4) as response:
                 if response.status == 200:
-                    print(f"{name} ready on 127.0.0.1:{port} (PID {current.pid})", flush=True)
+                    print(f"{name} ready (port {port}, PID {current.pid})", flush=True)
                     return
         except (URLError, TimeoutError):
             pass

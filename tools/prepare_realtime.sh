@@ -2,8 +2,8 @@
 # Prepare one Linux x86_64 engine and its pinned weights.
 set -euo pipefail
 backend=${1:-nvfp4}
-if [[ $# -gt 1 || ( $backend != nvfp4 && $backend != q4 ) ]]; then
-    echo "Usage: bash tools/prepare_realtime.sh [nvfp4|q4]" >&2
+if [[ $# -gt 1 || ( $backend != nvfp4 && $backend != q4 && $backend != 5lang ) ]]; then
+    echo "Usage: bash tools/prepare_realtime.sh [nvfp4|q4|5lang]" >&2
     exit 2
 fi
 runtime="$(cd "$(dirname "$0")/.." && pwd)/.runtime"
@@ -43,7 +43,9 @@ fi
 
 model=Drama3-V2-78e5ab7-NVFP4-256E.gguf
 repo=https://huggingface.co/WonderChord/Drama3-V2-NVFP4-256E-GGUF/resolve/06cfd87d3aa87cdd37e816fac6da485b8f6cbdb4
-fetch "$repo/$model" "${model_path:-$model}" 5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1
+if [[ $backend == nvfp4 ]]; then
+    fetch "$repo/$model" "${model_path:-$model}" 5577beb99be7bc0f4c8324daea90e2f3c8765d17842db41016560fb4820312b1
+fi
 patch=drama3-nvfp4-audiocpp.patch
 fetch "$repo/$patch" "$patch" bbb0742a2beb7c06a7592efaa5dca74f8bb1ba3f25da57ca9d882b874f082c09
 commit=066ea9862f41f4d7bcf996d5f00e464d8d28ace5
@@ -62,6 +64,12 @@ git -c submodule.external/audio.cpp-server-frontends.url=https://github.com/0xSh
 if ! git apply --quiet --reverse --check "$runtime/$patch"; then
     git apply "$runtime/$patch"
 fi
-bash scripts/build_linux.sh --backend cuda --cuda-arch 120a --build-type Release \
+bash scripts/build_linux.sh --backend cuda --cuda-arch '86-real;89-real;120a-real' --build-type Release \
     --build-dir build/linux-cuda-release --model-set custom --models fish_drama3 \
     --deployment-build --target audiocpp_server --jobs "${JOBS:-8}"
+if [[ $backend == 5lang ]]; then
+    destination=${model_path:-"$runtime/Drama3-Tier2-5Lang.gguf"}
+    if [[ ! -f $destination || ! -f $destination.sha256 ]]; then
+        python -B "$runtime/../tools/prepare_five_lang.py" --download --output "$destination"
+    fi
+fi

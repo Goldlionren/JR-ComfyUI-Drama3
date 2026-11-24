@@ -39,8 +39,8 @@ async def api_boundary(request, handler):
         lan = request.app.get(LAN_INTERFACE)
         host = request.url.host
         local = loopback_host(request.remote) and loopback_host(host)
-        if not local:
-            if not lan or host != str(lan.ip) or not request.remote:
+        if lan is not None and not local:
+            if host != str(lan.ip) or not request.remote:
                 raise ApiError(403, "Request outside the configured network.")
             peer = ipaddress.ip_address(request.remote)
             if not any(peer in network for network in request.app[LAN_NETWORKS]):
@@ -48,7 +48,7 @@ async def api_boundary(request, handler):
         origin = request.headers.get("Origin")
         if origin:
             origin_host = urlsplit(origin).hostname
-            if not loopback_host(origin_host) and not (lan and origin_host == str(lan.ip)):
+            if not loopback_host(origin_host) and origin_host != (str(lan.ip) if lan else host):
                 raise ApiError(403, "Origin outside the configured network.")
         return await handler(request)
     except ApiError as exc:

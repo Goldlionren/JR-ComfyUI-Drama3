@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import soundfile as sf
@@ -42,6 +43,27 @@ class LocalFileVideo:
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_asr_model_selection(self):
+        inputs = nodes.LocalASR.define_schema().inputs
+        self.assertEqual([i.id for i in inputs], ["audio", "backend", "language", "device", "model_path"])
+        self.assertEqual(inputs[1].options, ["Whisper small", "Paraformer zh"])
+        self.assertEqual(inputs[-1].default, "")
+        with tempfile.TemporaryDirectory() as tmp:
+            aux = Path(tmp)
+            checkpoint = aux / "whisper-small.pt"
+            checkpoint.touch()
+            gguf = aux / "Drama3-Tier2-5Lang.GGUF"
+            gguf.touch()
+            with patch.dict(os.environ, {"JR_DRAMA3_WHISPER_PATH": ""}):
+                self.assertEqual(asr.asr_path("", "JR_DRAMA3_WHISPER_PATH", [checkpoint]), checkpoint.resolve())
+                self.assertEqual(asr.asr_path(f'"{checkpoint}"', "JR_DRAMA3_WHISPER_PATH", []), checkpoint.resolve())
+                with self.assertRaisesRegex(FileNotFoundError, "jr_analysis_prepare.py whisper"):
+                    asr.asr_path("", "JR_DRAMA3_WHISPER_PATH", [])
+            with patch.object(asr, "_digest", side_effect=AssertionError("GGUF must not be hashed")):
+                for backend in inputs[1].options:
+                    with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "实时语音"):
+                        nodes.LocalASR.execute(tone(0.1), backend, "zh", "cpu", f'"{gguf}"')
+
     def test_schema_and_connections(self):
         registered = {c.define_schema().node_id: c for c in nodes.NODES}
         self.assertEqual(len(registered), len(nodes.NODES))

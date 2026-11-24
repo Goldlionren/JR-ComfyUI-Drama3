@@ -13,7 +13,6 @@ import time
 
 PROFILE_CONFIG = Path(__file__).with_name("config.yaml")
 WORKSPACE_PROFILE = Path(__file__).resolve().parents[2] / ".runtime" / "hermes-drama3"
-LOCAL_BASE = "http://127.0.0.1:8193/v1"
 
 
 def speak(text, output, *, instructions=None):
@@ -22,10 +21,10 @@ def speak(text, output, *, instructions=None):
     from tools import tts_tool  # registers text_to_speech in Hermes
 
     config = load_config()["tts"]
-    if (config["provider"], config["openai"]["base_url"], config["openai"]["model"]) != (
-        "openai", LOCAL_BASE, "drama-3"
-    ):
-        raise ValueError("Hermes did not load the local Drama 3 profile.")
+    speech_config = config["openai"]
+    if config["provider"] != "openai" or speech_config["model"] != "drama-3" or not speech_config.get("base_url"):
+        raise ValueError("The Hermes profile must select the openai provider, the drama-3 model and its API base_url.")
+    endpoint = speech_config["base_url"].rstrip("/") + "/audio/speech"
 
     if output.suffix.lower() == ".pcm":
         if instructions:
@@ -48,7 +47,7 @@ def speak(text, output, *, instructions=None):
                 target.write(chunk)
         if first_chunk is None or output.stat().st_size % 2:
             raise ValueError("Empty or incomplete PCM response.")
-        return {"provider": "openai", "route": "Hermes PCM streamer",
+        return {"provider": "openai", "route": "Hermes PCM streamer", "endpoint": endpoint,
                 "sample_rate": streamer.sample_rate, "channels": 1, "encoding": "s16le",
                 "received_chunks": count, "first_bytes_seconds": round(first_chunk, 3)}
 
@@ -62,7 +61,7 @@ def speak(text, output, *, instructions=None):
         raise RuntimeError(result.get("error", "Hermes text_to_speech failed."))
     if result.get("provider") != "openai" or Path(result["file_path"]).resolve() != output:
         raise RuntimeError("Hermes delivered an unexpected provider or output path.")
-    return {"provider": result["provider"], "route": "Hermes registry text_to_speech",
+    return {"provider": result["provider"], "route": "Hermes registry text_to_speech", "endpoint": endpoint,
             "chunks": result.get("chunk_count", 1)}
 
 
@@ -90,7 +89,6 @@ def main():
         else:
             shutil.copyfile(PROFILE_CONFIG, home / "config.yaml")
         os.environ["HERMES_HOME"] = str(home)
-        os.environ["NO_PROXY"] = "127.0.0.1,localhost"
         for variable in ("HERMES_PROFILE", "HERMES_CONFIG", "HERMES_CONFIG_PATH", "HERMES_ENV",
                          "HERMES_ENV_PATH", "HERMES_SESSION_PLATFORM"):
             os.environ.pop(variable, None)
@@ -104,7 +102,7 @@ def main():
         with staged.open("rb") as source, output.open("xb") as target:
             shutil.copyfileobj(source, target)
         result.update(hermes=importlib.metadata.version("hermes-agent"),
-                      model="drama-3", endpoint=LOCAL_BASE + "/audio/speech",
+                      model="drama-3",
                       text=args.text, output=str(output), bytes=output.stat().st_size,
                       elapsed_seconds=round(time.monotonic() - started, 3))
         with output.open("rb") as audio:

@@ -115,7 +115,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             response = await client.post("/v1/audio/speech", json={**self.body, name: value})
             self.assertEqual(response.status, 400)
             self.assertEqual((await response.json())["error"]["param"], name)
-        self.assertEqual((await client.get("/v1/models", headers={"Host": "example.org"})).status, 403)
+        self.assertEqual((await client.get("/v1/models", headers={"Host": "speech.example.org"})).status, 200)
         self.assertEqual((await client.get("/v1/models", headers={"Origin": "http://example.org"})).status, 403)
         self.assertEqual(self.backends[0].jobs, {})
 

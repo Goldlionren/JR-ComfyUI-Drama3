@@ -1,7 +1,8 @@
-"""Convert a completed local FLAC preview to an agent's requested wire format."""
+"""Encode completed speech in the audio format requested by the client."""
 import asyncio
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 
@@ -11,8 +12,23 @@ from .speech import ApiError
 async def convert(flac, fmt, speed, executable):
     if not flac.startswith(b"fLaC"):
         raise ApiError(502, "ComfyUI returned invalid FLAC data.")
+    return await encode_audio(flac, "flac", fmt, speed, executable)
+
+
+def local_ffmpeg():
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return executable
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        return get_ffmpeg_exe()
+    except (ImportError, RuntimeError) as exc:
+        raise ApiError(503, "Audio encoder unavailable. Install imageio-ffmpeg in the gateway Python environment.") from exc
+
+
+async def encode_audio(audio, input_format, fmt, speed, executable):
     args = [executable, "-hide_banner", "-loglevel", "error", "-nostdin", "-protocol_whitelist", "pipe",
-            "-f", "flac", "-i", "pipe:0", "-map", "0:a:0", "-map_metadata", "-1", "-ac", "1"]
+            "-f", input_format, "-i", "pipe:0", "-map", "0:a:0", "-map_metadata", "-1", "-ac", "1"]
     if speed != 1.:
         filters = []
         while speed > 2:
@@ -41,7 +57,7 @@ async def convert(flac, fmt, speed, executable):
         except OSError as exc:
             raise ApiError(503, f"Could not start local FFmpeg: {exc}.") from exc
         try:
-            _, error = await proc.communicate(flac)
+            _, error = await proc.communicate(audio)
         finally:
             if proc.returncode is None:
                 try:

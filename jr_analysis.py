@@ -48,13 +48,20 @@ class LocalASR(io.ComfyNode):
         return schema(
             "JRDrama3LocalASR",
             "离线语音转写",
-            "中文、英文与混合配音使用 Whisper small；可另选本地中文 Paraformer。",
+            "把参考录音转成逐字稿。选择转写模型后会自动查找本地权重。五语合成模型在「Drama 3 · 实时语音」节点选择。",
             [
                 io.Audio.Input("audio"),
-                options("backend", ["Whisper small", "Paraformer zh"]),
+                io.Combo.Input(
+                    "backend", display_name="转写模型", options=["Whisper small", "Paraformer zh"],
+                    tooltip="Whisper small 可转写多种语言，Paraformer zh 用于普通话。",
+                ),
                 options("language", ["auto", "zh", "en"]),
                 options("device", ["cpu", "cuda"]),
-                io.String.Input("model_path", default=""),
+                io.String.Input(
+                    "model_path", display_name="转写模型路径", default="",
+                    placeholder="留空自动查找",
+                    tooltip="Whisper small 填官方多语种 small.pt 文件的完整路径，默认使用插件目录下的 .runtime/aux/whisper-small.pt。Paraformer zh 填含 model.pt 和 config.yaml 的模型目录。",
+                ),
             ],
             [string_port("transcript"), string_port("timed_segments_json")],
         )

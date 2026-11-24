@@ -8,6 +8,7 @@ import re
 RATE = 44100
 PORT = 8195
 MAX_REF_BYTES = 5 * 1024 * 1024
+PRESET_VOICES = ("zh", "en", "ja", "ko", "yue")
 
 
 def is_saved_voice(voice):
@@ -32,25 +33,28 @@ def pcm_event(event, sample_count):
     raise RuntimeError(f"Unexpected speech event: {str(event)[:500]}")
 
 
-def stream_speech(text, voice, seed, *, port=PORT, instructions="", reference_wav=None, reference_text=""):
+def stream_speech(text, voice, seed, *, port=PORT, instructions="", reference_wav=None, reference_text="",
+                  model="drama-3"):
     if not isinstance(text, str) or len(text) > 4096:
         raise ValueError("台词必须为字符串，最多 4096 个字符。")
-    if voice not in ("zh", "en") and not is_saved_voice(voice):
-        raise ValueError("请选择 zh、en 或已保存的完整音色 ID。")
-    conn = HTTPConnection("127.0.0.1", port, timeout=120)
+    if voice not in PRESET_VOICES and not is_saved_voice(voice):
+        raise ValueError("请选择内置音色或已保存的完整音色 ID。")
+    conn = HTTPConnection("127.0.0.1", port, timeout=300)
     try:
         conn.request("GET", "/v1/models")
         models = conn.getresponse()
         if models.status != 200:
             raise RuntimeError(f"量化服务返回 HTTP {models.status}")
-        (model,) = json.load(models)["data"]
-        public = model.get("owned_by") == "jr-drama3"
+        entry = next((entry for entry in json.load(models)["data"] if entry["id"] == model), None)
+        if entry is None:
+            raise ValueError(f"服务没有提供模型 {model}，请检查模型安装和服务版本。")
+        public = entry.get("owned_by") == "jr-drama3"
         if not public and not text.strip():
             raise ValueError("请通过实时 API 跳过空台词。")
         if not public and (instructions or reference_wav is not None or reference_text or is_saved_voice(voice)):
             raise ValueError(f"自定义音色和整段语气请通过本地实时服务端口 {PORT} 使用。")
         req = {
-            "model": model["id"],
+            "model": model,
             "input": text,
             "voice": voice,
             "stream_format": "sse",
@@ -64,7 +68,7 @@ def stream_speech(text, voice, seed, *, port=PORT, instructions="", reference_wa
             req["voice_ref"] = {"type": "base64", "data": base64.b64encode(reference_wav).decode("ascii")}
         if reference_text:
             req["reference_text"] = reference_text
-        if "speech" in model or public:
+        if "speech" in entry or public:
             req["seed"] = seed
         else:
             req["options"] = {"seed": seed}

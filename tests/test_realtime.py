@@ -6,6 +6,7 @@ from ipaddress import IPv4Interface, IPv4Network
 import json
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -18,6 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from jr_realtime_client import stream_speech
+from provider.audio import local_ffmpeg
 from provider.realtime import create_app, directed_chunks, voice_options
 from provider.server import api_boundary
 
@@ -93,6 +95,83 @@ class RealtimeTests(unittest.TestCase):
 
 
 class SentenceGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hermes_file_formats_return_decodable_audio(self):
+        tone = (12000 * np.sin(2 * np.pi * 440 * np.arange(11025) / 44100)).astype("<i2")
+
+        async def generate(request):
+            delta = {"type": "speech.audio.delta", "audio": base64.b64encode(tone.tobytes()).decode()}
+            done = {"type": "speech.audio.done", "stop": "complete", "samples": len(tone)}
+            return web.Response(text=f"data: {json.dumps(delta)}\n\ndata: {json.dumps(done)}\n\n",
+                                content_type="text/event-stream")
+
+        native = web.Application()
+        native.router.add_post("/v1/audio/speech", generate)
+        async with TestServer(native) as engine, TestClient(TestServer(create_app("5lang", engine.port))) as client:
+            for fmt, mime, rate in (("mp3", "audio/mpeg", 44100), ("opus", "audio/ogg", 48000),
+                                    ("aac", "audio/aac", 44100), ("flac", "audio/flac", 44100)):
+                with self.subTest(fmt=fmt):
+                    resp = await client.post("/v1/audio/speech", json={
+                        "model": "drama-3", "voice": "zh", "input": "你好。", "response_format": fmt})
+                    self.assertEqual((resp.status, resp.content_type), (200, mime))
+                    self.assertEqual(int(resp.headers["X-Sample-Rate"]), rate)
+                    decoded = await asyncio.to_thread(subprocess.run, [
+                        local_ffmpeg(), "-v", "error", "-i", "pipe:0", "-ar", "44100", "-f", "s16le", "pipe:1"
+                    ], input=await resp.read(), capture_output=True, check=True)
+                    pcm = np.frombuffer(decoded.stdout, dtype="<i2")
+                    self.assertGreaterEqual(len(pcm), len(tone) - 1)
+                    self.assertGreater(int(pcm.max()), 5000)
+            for fmt, stream, param in (("unknown", "audio", "response_format"), ([], "audio", "response_format"),
+                                       ("mp3", "sse", "stream_format")):
+                resp = await client.post("/v1/audio/speech", json={"input": "Hello.",
+                                         "response_format": fmt, "stream_format": stream})
+                self.assertEqual(resp.status, 400)
+                self.assertEqual((await resp.json())["error"]["param"], param)
+
+    async def test_overlong_reference_returns_actionable_client_error(self):
+        async def reject(request):
+            event = {"type": "error", "error": {"message": "Drama 3 required prompt leaves no room to generate"}}
+            return web.Response(text="data: " + json.dumps(event) + "\n\n", content_type="text/event-stream")
+
+        native = web.Application()
+        native.router.add_post("/v1/audio/speech", reject)
+        async with TestServer(native) as server:
+            async with TestClient(TestServer(create_app("5lang", engine_port=server.port))) as client:
+                reply = await client.post("/v1/audio/speech", json={"input": "Hello."})
+                self.assertEqual(reply.status, 400)
+                self.assertIn("matching transcript", (await reply.json())["error"]["message"])
+
+    async def test_switch_is_exclusive_and_failed_switch_keeps_the_active_model(self):
+        entered = threading.Event()
+        release = threading.Event()
+        selected = []
+
+        def switch(target):
+            selected.append(target)
+            if target == "nvfp4":
+                raise FileNotFoundError("uninstalled model")
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("timed out")
+
+        async with TestClient(TestServer(create_app("q4", switch=switch))) as client:
+            pending = asyncio.create_task(client.post("/v1/models/select", json={"model": "drama-3-5lang"}))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                resp = await client.post("/v1/audio/speech", json={"input": "Hello."})
+                self.assertEqual(resp.status, 429)
+                resp = await client.post("/v1/models/select", json={"model": "drama-3-q4"})
+                self.assertEqual(resp.status, 429)
+            finally:
+                release.set()
+                resp = await pending
+            self.assertEqual((await resp.json())["backend"], "5lang")
+            resp = await client.post("/v1/models/select", json={"model": "drama-3-nvfp4"})
+            self.assertEqual(resp.status, 503)
+            resp = await client.get("/v1/models")
+            data = (await resp.json())["data"]
+            self.assertEqual([x["id"] for x in data if x["active"]], ["drama-3", "drama-3-5lang"])
+            self.assertEqual(selected, ["5lang", "nvfp4"])
+
     def test_decoration_chunks_are_removed_before_directions_and_seeding(self):
         self.assertEqual(directed_chunks("好的。😊\n---\n👨‍👩‍👧‍👦\n再见。～", "whisper"),
                          ["[whisper] 好的。", "[whisper] 再见。"])
@@ -184,7 +263,9 @@ class SentenceGatewayTests(unittest.IsolatedAsyncioTestCase):
             (lan, "192.168.10.12", "192.168.1.200", "", 403),
             (lan, "192.168.1.12", "elsewhere.test", "", 403),
             (lan, "192.168.1.12", "192.168.1.200", "http://elsewhere.test", 403),
-            (None, "192.168.1.12", "192.168.1.200", "", 403),
+            (None, "192.168.100.215", "192.168.1.241", "", 200),
+            (None, "192.168.100.215", "speech.example.org", "https://speech.example.org", 200),
+            (None, "192.168.100.215", "speech.example.org", "https://unrelated.example.org", 403),
         ):
             app = create_app("nvfp4", lan=interface, extra_networks=(IPv4Network("192.168.100.0/24"),))
             request = make_mocked_request("GET", "/health", {"Host": host, "Origin": origin}, app=app)

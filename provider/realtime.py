@@ -5,9 +5,7 @@ import asyncio
 import base64
 from contextlib import aclosing
 import io
-from ipaddress import IPv4Interface, IPv4Network
 import json
-from pathlib import Path
 import secrets
 import wave
 
@@ -15,12 +13,14 @@ import numpy as np
 import regex
 from aiohttp import ClientSession, ClientTimeout, web
 
-from jr_realtime_client import PORT, RATE, pcm_event
+from jr_realtime_client import PORT, PRESET_VOICES, RATE, pcm_event
+from jr_realtime_paths import MODELS, PUBLIC_MODELS, engine_binary, model_file
 from jr_script_core import MARKS, SPEAKER, apply_to_spoken, chunk_script
+from .audio import encode_audio, local_ffmpeg
 from .q4_voice import load_q4_voice
 from .realtime_voices import register_voice, voice_options
 from .server import LAN_INTERFACE, LAN_NETWORKS, api_boundary, default_db
-from .speech import ApiError, catalog
+from .speech import ApiError, FORMATS, catalog
 
 ENGINE_PORT = 8196
 MODEL = "drama-3"
@@ -75,7 +75,7 @@ async def sdk_pcm(source):
             yield tail.astype("<i2", copy=False).tobytes()
 
 
-def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, extra_networks=()):
+def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, extra_networks=(), switch=None):
     app = web.Application(middlewares=[api_boundary], client_max_size=7 * 1024 * 1024)
     if lan is not None:
         app[LAN_INTERFACE] = lan
@@ -94,22 +94,78 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
 
     app.cleanup_ctx.append(connection)
 
+    def catalog_entry(id_, selected):
+        return {"id": id_, "object": "model", "owned_by": "jr-drama3", "backend": selected,
+                "active": selected == backend,
+                "installed": selected == backend or (engine_binary(selected).is_file() and model_file(selected).is_file())}
+
     async def models(request):
+        entries = [catalog_entry(MODEL, backend)]
+        entries.extend(catalog_entry(name, key) for name, key in PUBLIC_MODELS.items() if switch or key == backend)
+        return web.json_response({"object": "list", "data": entries})
+
+    async def health(request):
         async with engine.get(base + "/v1/models", allow_redirects=False) as r:
             if r.status != 200:
                 raise ApiError(503, "Local quantized engine unavailable.")
             items = (await r.json())["data"]
             if not any(m["id"] == MODEL for m in items):
                 raise ApiError(503, "Expected Drama 3 engine on the configured port.")
-        return web.json_response(
-            {
-                "object": "list",
-                "data": [{"id": MODEL, "object": "model", "owned_by": "jr-drama3", "backend": backend}],
-            }
-        )
+        return web.json_response({"object": "list", "data": [catalog_entry(MODEL, backend)]})
+
+    def requested_backend(body):
+        name = body.get("model", MODEL)
+        if name == MODEL:
+            return backend
+        if not isinstance(name, str) or name not in PUBLIC_MODELS:
+            raise ApiError(400, "Unknown model. See /v1/models.")
+        target = PUBLIC_MODELS[name]
+        if target != backend and switch is None:
+            raise ApiError(503, "Start the managed realtime service to switch models.")
+        return target
+
+    async def activate(target):
+        nonlocal backend
+        if switch is None:
+            return
+
+        async def change():
+            nonlocal backend
+            try:
+                await asyncio.to_thread(switch, target)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ApiError(503, f"Could not load {target}: {exc}") from exc
+            backend = target
+
+        task = asyncio.create_task(change())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The native process transition outlives the HTTP client; keep the engine reserved.
+            await task
+            raise
+
+    async def select_model(request):
+        nonlocal busy
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeError):
+            raise ApiError(400, "Invalid selection JSON.")
+        if not isinstance(body, dict) or set(body) != {"model"}:
+            raise ApiError(400, "Supply a model ID from /v1/models.")
+        target = requested_backend(body)
+        if busy:
+            raise ApiError(429, "Speech engine busy.")
+        busy = True
+        try:
+            await activate(target)
+            return web.json_response(catalog_entry("drama-3-" + backend, backend))
+        finally:
+            busy = False
 
     async def list_voices(request):
-        rows = [{"id": key, "object": "voice", "source": "preset"} for key in ("zh", "en")]
+        presets = PRESET_VOICES if backend == "5lang" else ("zh", "en")
+        rows = [{"id": key, "object": "voice", "source": "preset"} for key in presets]
         rows.extend(await asyncio.to_thread(catalog, db))
         return web.json_response({"object": "list", "data": rows})
 
@@ -133,7 +189,7 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
                 "stream_format": "sse",
             }
             part_seed = (seed + i) % 2**32
-            if backend == "nvfp4":
+            if backend != "q4":
                 # Keep each validated sentence intact. The engine's default
                 # 128-codepoint split can otherwise create an unchecked tail.
                 data["options"] = {"seed": part_seed, "text_chunk_size": max(300, len(text))}
@@ -149,7 +205,15 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
                     payload = line[5:].strip()
                     if payload == b"[DONE]":
                         raise RuntimeError("Engine ended before confirming the sentence.")
-                    pcm = pcm_event(json.loads(payload), count)
+                    event = json.loads(payload)
+                    if event.get("type") == "error":
+                        error = event.get("error", {})
+                        message = str(error.get("message", error)) if isinstance(error, dict) else str(error)
+                        if "leaves no room to generate" in message:
+                            raise ApiError(400, "Reference audio, transcript and dialogue exceed the model context. "
+                                           "Use a shorter excerpt with its matching transcript.")
+                        raise ApiError(502, message[:1024] or "Native speech generation failed.")
+                    pcm = pcm_event(event, count)
                     if pcm is None:
                         break
                     count += len(pcm) // 2
@@ -163,8 +227,9 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             body = await request.json()
         except (ValueError, UnicodeError):
             raise ApiError(400, "Invalid speech JSON.")
-        if not isinstance(body, dict) or body.get("model", MODEL) != MODEL:
+        if not isinstance(body, dict):
             raise ApiError(400, "Expected a drama-3 speech request.")
+        target = requested_backend(body)
         if set(body) - {"model", "input", "seed", "voice", "response_format", "stream_format",
                         "instructions", "voice_ref", "reference_text"}:
             raise ApiError(400, "Unsupported realtime speech option.")
@@ -175,13 +240,17 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
         if type(seed) is not int or not 0 <= seed < 2**32:
             raise ApiError(400, "Invalid seed.")
         fmt, stream = body.get("response_format", "pcm"), body.get("stream_format", "audio")
-        if fmt not in ("pcm", "wav") or stream not in ("audio", "sse") or (fmt == "wav" and stream == "sse"):
-            raise ApiError(400, "Choose pcm (audio or sse) or wav (audio).")
+        if not isinstance(fmt, str) or fmt not in FORMATS:
+            raise ApiError(400, f"Unsupported response_format {str(fmt)[:64]!r}. Choose {', '.join(FORMATS)}.",
+                           param="response_format")
+        if stream not in ("audio", "sse") or (stream == "sse" and fmt != "pcm"):
+            raise ApiError(400, f"Unsupported stream_format {str(stream)[:64]!r} for {fmt}. "
+                           "Use audio for files or sse with pcm.", param="stream_format")
         try:
             instructions = body.get("instructions", "")
             texts = directed_chunks(text, instructions)
             if texts:
-                options = await asyncio.to_thread(voice_options, body, backend, db)
+                options = await asyncio.to_thread(voice_options, body, target, db)
         except ValueError as exc:
             raise ApiError(400, str(exc)) from exc
         result = None
@@ -202,13 +271,21 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
         headers = {"X-Sample-Rate": str(rate), "X-Speech-Seed": str(seed),
                    "Cache-Control": "no-store", "Vary": "Accept"}
         try:
-            if fmt == "wav":
+            if texts:
+                await activate(target)
+            if fmt != "pcm":
+                executable = await asyncio.to_thread(local_ffmpeg) if fmt != "wav" else None
                 buffer = io.BytesIO()
                 with wave.open(buffer, "wb") as w:
                     w.setparams((1, 2, RATE, 0, "NONE", ""))
                     async for pcm in source:
                         w.writeframesraw(pcm)
-                return web.Response(body=buffer.getvalue(), content_type="audio/wav", headers=headers)
+                audio = buffer.getvalue()
+                if executable:
+                    audio = await encode_audio(audio, "wav", fmt, 1.0, executable)
+                if fmt == "opus":
+                    headers["X-Sample-Rate"] = "48000"
+                return web.Response(body=audio, content_type=FORMATS[fmt], headers=headers)
             count = 0
             async for pcm in source:
                 if result is None:
@@ -240,7 +317,8 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
 
     app.router.add_get("/", models)
     app.router.add_get("/v1/models", models)
-    app.router.add_get("/health", models)
+    app.router.add_post("/v1/models/select", select_model)
+    app.router.add_get("/health", health)
     app.router.add_get("/v1/audio/voices", list_voices)
     app.router.add_post("/v1/audio/voices", save_voice)
     app.router.add_post("/v1/audio/speech", speech)
@@ -249,12 +327,8 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--backend", required=True, choices=["q4", "nvfp4"])
+    from tools.realtime_service import switch_engine
+    ap.add_argument("--backend", required=True, choices=MODELS)
     args = ap.parse_args()
-    config = Path(__file__).resolve().parents[1] / ".runtime/provider-service/realtime-lan.txt"
-    lines = config.read_text("utf-8").strip().splitlines() if config.is_file() else []
-    lan = IPv4Interface(lines[0]) if lines else None
-    extra_networks = tuple(IPv4Network(line.strip()) for line in lines[1:] if line.strip())
-    hosts = ["127.0.0.1", str(lan.ip)] if lan else ["127.0.0.1"]
-    web.run_app(create_app(args.backend, lan=lan, extra_networks=extra_networks),
-                host=hosts, port=PORT, handler_cancellation=True)
+    web.run_app(create_app(args.backend, switch=switch_engine),
+                host="0.0.0.0", port=PORT, handler_cancellation=True)

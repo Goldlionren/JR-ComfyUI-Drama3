@@ -7,7 +7,7 @@ import wave
 
 import numpy as np
 
-from jr_realtime_client import MAX_REF_BYTES, is_saved_voice
+from jr_realtime_client import MAX_REF_BYTES, PRESET_VOICES, is_saved_voice
 from jr_voice_store import load_voice, save_voice
 
 
@@ -81,8 +81,8 @@ def voice_options(body, backend, db=None):
         if "voice_ref" in body or "reference_text" in body:
             raise ValueError("A saved voice ID already supplies its reference recording and transcript.")
         return saved_options(db, voice)
-    if voice not in ("zh", "en"):
-        raise ValueError("Choose zh, en or an exact saved voice ID from /v1/audio/voices.")
+    if voice not in (PRESET_VOICES if backend == "5lang" else ("zh", "en")):
+        raise ValueError("Choose a preset for the requested model or a saved voice ID. ja, ko and yue use drama-3-5lang.")
     if "voice_ref" not in body:
         if body.get("reference_text", "") != "":
             raise ValueError("reference_text needs a matching voice_ref recording.")

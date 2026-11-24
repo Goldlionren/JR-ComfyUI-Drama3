@@ -33,7 +33,7 @@ class HermesClientTests(unittest.TestCase):
         self.requests = []
 
         def respond(transport, request):
-            self.assertEqual(str(request.url), "http://127.0.0.1:8193/v1/audio/speech")
+            self.assertEqual(str(request.url), "http://192.168.1.241:8193/v1/audio/speech")
             self.assertEqual(request.method, "POST")
             self.assertEqual(request.headers["authorization"], "Bearer drama3-local-placeholder")
             self.requests.append(json.loads(request.content))
@@ -85,7 +85,7 @@ class HermesClientTests(unittest.TestCase):
         config = self.home / "config.yaml"
         config.write_text(config.read_text(encoding="utf-8").replace("model: drama-3", "model: wrong"),
                           encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "local Drama"):
+        with self.assertRaisesRegex(ValueError, "drama-3 model"):
             speak("Hello.", self.home / "unused.wav")
         self.assertFalse(self.requests)
 
