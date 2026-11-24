@@ -6,6 +6,7 @@ import base64
 from contextlib import aclosing
 import io
 import json
+import logging
 import secrets
 import wave
 
@@ -18,6 +19,7 @@ from jr_realtime_paths import MODELS, PUBLIC_MODELS, engine_binary, model_file
 from jr_script_core import MARKS, SPEAKER, apply_to_spoken, chunk_script
 from .audio import encode_audio, local_ffmpeg
 from .q4_voice import load_q4_voice
+from .reference_echo import ReferenceEcho
 from .realtime_voices import decode_previous, previous_options, register_voice, voice_options
 from .server import LAN_INTERFACE, LAN_NETWORKS, api_boundary, default_db
 from .speech import ApiError, FORMATS, catalog
@@ -28,6 +30,12 @@ SDK_PCM_RATE = 24000
 # Match whole emoji clusters (including flags, skin tones and joined family emoji).
 EMOJI = regex.compile(r"[#*0-9]\ufe0f?\u20e3|(?=[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}])\X")
 SPOKEN_CHAR = regex.compile(r"(?!\p{Default_Ignorable_Code_Point})[\p{L}\p{N}]")
+LIST_PREFIX = regex.compile(r"(?m)^(\h*)[0-9]{1,3}[.)]\h+(?=\S)")
+EMPHASIS = regex.compile(r"(?<![\w*])(?P<mark>\*{1,3})(?=\S)([^*\n]+?)(?<=\S)(?P=mark)(?![\w*])")
+
+
+def spoken_text(line):
+    return MARKS.sub("", line.replace("<|phoneme_start|>", "").replace("<|phoneme_end|>", ""))
 
 
 def directed_chunks(text, instructions):
@@ -39,6 +47,9 @@ def directed_chunks(text, instructions):
     cue = f"[{direction}] " if direction else ""
     # Empty cue and phoneme pairs have no token payload for the script parser.
     text = text.replace("[]", " ").replace("<|phoneme_start|><|phoneme_end|>", " ")
+    # Strip list numbering before a period can split off into a separate request.
+    text = LIST_PREFIX.sub(r"\1", text)
+    text = apply_to_spoken(text, lambda part: EMPHASIS.sub(r"\2", part))
     chunks, _ = chunk_script(text, 300 - len(cue.encode()), allow_empty=True)
     output = []
     for chunk in chunks:
@@ -49,8 +60,7 @@ def directed_chunks(text, instructions):
         line = chunk[offset:].lstrip()
         # Directions alone can make the model recite the reference. Phonetic
         # spellings are dialogue, so keep their payload when inspecting the text.
-        spoken = MARKS.sub("", line.replace("<|phoneme_start|>", "").replace("<|phoneme_end|>", ""))
-        if SPOKEN_CHAR.search(spoken):
+        if SPOKEN_CHAR.search(spoken_text(line)):
             output.append((chunk[:offset] + " " if speaker else "") + cue + line)
     return output
 
@@ -258,54 +268,79 @@ def create_app(backend, engine_port=ENGINE_PORT, *, voice_db=None, lan=None, ext
             raise ApiError(400, str(exc)) from exc
         return web.json_response(entry)
 
+    async def native_sentence(text, voice, part_seed, sampling):
+        data = {
+            "model": MODEL,
+            "input": text,
+            **voice,
+            "response_format": "pcm",
+            "stream_format": "sse",
+        }
+        if backend != "q4":
+            # Keep each validated sentence intact. The engine's default
+            # 128-codepoint split can otherwise create an unchecked tail.
+            data["options"] = {**sampling, "seed": part_seed, "text_chunk_size": max(300, len(text))}
+        else:
+            data.update(sampling)
+            data["seed"] = part_seed
+        async with engine.post(base + "/v1/audio/speech", json=data, allow_redirects=False) as r:
+            if r.status != 200:
+                raise ApiError(502, (await r.content.read(1024)).decode(errors="replace"))
+            count = 0
+            async for line in r.content:
+                if not line.startswith(b"data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == b"[DONE]":
+                    raise RuntimeError("Engine ended before confirming the sentence.")
+                event = json.loads(payload)
+                if event.get("type") == "error":
+                    error = event.get("error", {})
+                    message = str(error.get("message", error)) if isinstance(error, dict) else str(error)
+                    if "leaves no room to generate" in message:
+                        raise ApiError(400, "Reference audio, transcript and dialogue exceed the model context. "
+                                       "Use a shorter excerpt with its matching transcript.")
+                    raise ApiError(502, message[:1024] or "Native speech generation failed.")
+                pcm = pcm_event(event, count)
+                if pcm is None:
+                    # audio.cpp's speech SSE omits the task's reached_limit flag.
+                    # At the cap the transport alone cannot certify a complete production take.
+                    if "max_tokens" in sampling and count >= sampling["max_tokens"] * 2048:
+                        raise IncompleteSpeechError("音频达到 max_frames，无法确认完整结束。请缩短台词或提高上限。")
+                    break
+                count += len(pcm) // 2
+                yield pcm
+            else:
+                raise RuntimeError("Incomplete sentence stream.")
+
     async def chunks(texts, voice, seed, sampling):
+        guard = await asyncio.to_thread(ReferenceEcho.from_voice, voice) if "voice_ref" in voice else None
         if backend == "q4" and "voice_ref" in voice:
             voice = {"voice": await load_q4_voice(engine, base, voice["voice_ref"], voice["reference_text"])}
         for i, text in enumerate(texts):
-            data = {
-                "model": MODEL,
-                "input": text,
-                **voice,
-                "response_format": "pcm",
-                "stream_format": "sse",
-            }
             part_seed = (seed + i) % 2**32
-            if backend != "q4":
-                # Keep each validated sentence intact. The engine's default
-                # 128-codepoint split can otherwise create an unchecked tail.
-                data["options"] = {**sampling, "seed": part_seed, "text_chunk_size": max(300, len(text))}
+            if guard is None or not guard.applies(spoken_text(text)):
+                async with aclosing(native_sentence(text, voice, part_seed, sampling)) as source:
+                    async for pcm in source:
+                        yield pcm
+                continue
+
+            # Hold this sentence until it passes. Retrying after emitting PCM
+            # would leave the reference audible or duplicate earlier dialogue.
+            for attempt in range(3):
+                attempt_seed = (part_seed + attempt * 0x9E3779B9) % 2**32
+                async with aclosing(native_sentence(text, voice, attempt_seed, sampling)) as source:
+                    frames = [pcm async for pcm in source]
+                if not await asyncio.to_thread(guard.matches, b"".join(frames), RATE):
+                    for pcm in frames:
+                        yield pcm
+                    break
+                logging.getLogger(__name__).warning("Reference audio match: %s sentence %d, seed %d, attempt %d/3",
+                                                    backend, i + 1, attempt_seed, attempt + 1)
             else:
-                data.update(sampling)
-                data["seed"] = part_seed
-            async with engine.post(base + "/v1/audio/speech", json=data, allow_redirects=False) as r:
-                if r.status != 200:
-                    raise ApiError(502, (await r.content.read(1024)).decode(errors="replace"))
-                count = 0
-                async for line in r.content:
-                    if not line.startswith(b"data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if payload == b"[DONE]":
-                        raise RuntimeError("Engine ended before confirming the sentence.")
-                    event = json.loads(payload)
-                    if event.get("type") == "error":
-                        error = event.get("error", {})
-                        message = str(error.get("message", error)) if isinstance(error, dict) else str(error)
-                        if "leaves no room to generate" in message:
-                            raise ApiError(400, "Reference audio, transcript and dialogue exceed the model context. "
-                                           "Use a shorter excerpt with its matching transcript.")
-                        raise ApiError(502, message[:1024] or "Native speech generation failed.")
-                    pcm = pcm_event(event, count)
-                    if pcm is None:
-                        # audio.cpp's speech SSE omits the task's reached_limit flag.
-                        # At the cap the transport alone cannot certify a complete production take.
-                        if "max_tokens" in sampling and count >= sampling["max_tokens"] * 2048:
-                            raise IncompleteSpeechError("音频达到 max_frames，无法确认完整结束。请缩短台词或提高上限。")
-                        break
-                    count += len(pcm) // 2
-                    yield pcm
-                else:
-                    raise RuntimeError("Incomplete sentence stream.")
+                raise IncompleteSpeechError(
+                    f"第 {i + 1} 句连续三次与参考录音的声学片段匹配。请改写这句或更换参考录音后重试。"
+                )
 
     async def speech(request):
         nonlocal busy

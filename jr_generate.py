@@ -257,6 +257,8 @@ def _take_dir():
 def _cached_render(folder, identity, teacher, text, seed, cast, settings, **kwargs):
     if isinstance(teacher, QuantizedModel):
         identity = {**identity, "model": teacher.id, "revision": teacher.sha256}
+        if any(role.get("audio") is not None for role in cast or ()):
+            identity["reference_echo_check"] = 1
     if isinstance(teacher, FlaTeacherPath):
         identity = {**identity, "attention_backend": "fla-0.6.0"}
     key = key_for(identity)
